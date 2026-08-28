@@ -5,7 +5,7 @@ import logging
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
-    WebAppInfo, MenuButtonWebApp,
+    WebAppInfo, MenuButtonWebApp, BotCommand,
 )
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -156,8 +156,10 @@ async def players_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         "/start - register yourself (max 2 players)",
+        "/players - see who's registered",
         "/app - open the PL Predictor web app" if WEBAPP_URL else None,
         "/newgameweek [matchday] - fetch PL fixtures, tap one to pick it",
+        "/setmatch <number> - pick which fixture you're competing on",
         "/predict - open the score keypad (or type /predict 2-1 [wildcard])",
         "/pending - see whose turn it is / current fixture",
         "/results - manually check if the current match has finished and score it",
@@ -449,6 +451,29 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(app):
+    # Registers the command list Telegram shows in the "/" autocomplete
+    # menu (the popup you get when typing "/" in the chat box). This is
+    # separate from the /help text reply — both need to list the same
+    # commands, so keep them in sync if you add/remove a command.
+    commands = [
+        BotCommand("start", "Register yourself (max 2 players)"),
+        BotCommand("players", "See who's registered"),
+        BotCommand("newgameweek", "Fetch PL fixtures, tap one to pick it"),
+        BotCommand("setmatch", "Pick which fixture you're competing on"),
+        BotCommand("predict", "Open the score keypad"),
+        BotCommand("pending", "See whose turn it is / current fixture"),
+        BotCommand("results", "Check if the current match has finished"),
+        BotCommand("table", "See the points standings"),
+        BotCommand("history", "See past results and predictions"),
+        BotCommand("help", "Show all commands"),
+    ]
+    if WEBAPP_URL:
+        commands.insert(2, BotCommand("app", "Open the PL Predictor web app"))
+    try:
+        await app.bot.set_my_commands(commands)
+    except Exception:
+        log.exception("Failed to set command menu")
+
     # The chat "menu button" (bottom-left, next to the message box) only
     # supports web_app in private chats — Telegram doesn't allow it in
     # groups, so this is a bonus for whoever DMs the bot directly. In the

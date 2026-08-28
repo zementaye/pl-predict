@@ -86,6 +86,14 @@ def get_players():
             return cur.fetchall()
 
 
+def remove_player(telegram_id):
+    """Remove a registered predictor by Telegram user ID."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM players WHERE telegram_id=%s RETURNING telegram_id, name", (telegram_id,))
+            return cur.fetchone()
+
+
 def get_last_gameweek(chat_id):
     with get_conn() as conn:
         with conn.cursor() as cur:

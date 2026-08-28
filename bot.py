@@ -153,10 +153,60 @@ async def players_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Registered predictors:\n{names}")
 
 
+async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove a registered predictor. Prefer replying to their message; a
+    numeric Telegram ID can also be supplied as /remove <telegram_id>."""
+    requester = update.effective_user
+    players = db.get_players()
+
+    if not any(p["telegram_id"] == requester.id for p in players):
+        await update.message.reply_text("Only a registered predictor can remove another predictor.")
+        return
+
+    target_id = None
+    target_name = None
+
+    # Best option: reply to the person's message with /remove.
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        target_id = update.message.reply_to_message.from_user.id
+        target_name = update.message.reply_to_message.from_user.first_name
+    elif context.args:
+        value = context.args[0].strip()
+        if value.isdigit():
+            target_id = int(value)
+        else:
+            # Also allow /remove Name when the name matches a registered player.
+            matches = [p for p in players if p["name"].casefold() == value.casefold()]
+            if len(matches) == 1:
+                target_id = matches[0]["telegram_id"]
+                target_name = matches[0]["name"]
+
+    if target_id is None:
+        await update.message.reply_text(
+            "To remove someone, reply to their message with /remove.\n"
+            "You can also use /remove <Telegram_ID>."
+        )
+        return
+
+    if target_id == requester.id:
+        await update.message.reply_text("Use /start to register yourself again — /remove is for removing the other predictor.")
+        return
+
+    removed = db.remove_player(target_id)
+    if not removed:
+        await update.message.reply_text("That person isn't currently registered.")
+        return
+
+    await update.message.reply_text(
+        f"Removed {removed['name']} from the predictor game. They can join again with /start."
+    )
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         "/start - register yourself (max 2 players)",
         "/players - see who's registered",
+        "/remove - remove a predictor (reply to their message)",
         "/app - open the PL Predictor web app" if WEBAPP_URL else None,
         "/newgameweek [matchday] - fetch PL fixtures, tap one to pick it",
         "/setmatch <number> - pick which fixture you're competing on",
@@ -458,6 +508,7 @@ async def post_init(app):
     commands = [
         BotCommand("start", "Register yourself (max 2 players)"),
         BotCommand("players", "See who's registered"),
+        BotCommand("remove", "Remove a predictor (reply to their message)"),
         BotCommand("newgameweek", "Fetch PL fixtures, tap one to pick it"),
         BotCommand("setmatch", "Pick which fixture you're competing on"),
         BotCommand("predict", "Open the score keypad"),
@@ -496,6 +547,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("app", app_cmd))
     app.add_handler(CommandHandler("players", players_cmd))
+    app.add_handler(CommandHandler("remove", remove_cmd))
     app.add_handler(CommandHandler("newgameweek", newgameweek))
     app.add_handler(CommandHandler("setmatch", setmatch))
     app.add_handler(CommandHandler("predict", predict))

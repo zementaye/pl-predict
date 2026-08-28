@@ -77,6 +77,13 @@
     }
 
     var gw = state.active_gameweek;
+    if (state.players.length < 2) {
+      newGwFixtures = null;
+      content.innerHTML =
+        '<div class="empty">Game paused — an active predictor game needs 2 registered players.</div>' +
+        '<div class="status-line">Send <b>/start</b> to the bot to register the second player.</div>';
+      return;
+    }
     if (!gw) {
       newGwFixtures = null;
       content.innerHTML =

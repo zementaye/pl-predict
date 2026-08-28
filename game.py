@@ -41,11 +41,19 @@ def player_name(row, players):
 
 
 def allowed_predictor(gw, preds, players):
-    """Whose turn it is right now, or None if both predictions are already in."""
+    """Whose turn it is right now, or None if no valid turn exists."""
+    # A predictor game requires two registered players. An old active
+    # gameweek can still exist after someone is removed, so never let the
+    # missing opponent crash the web API with StopIteration.
+    if len(players) < 2:
+        return None
     if len(preds) == 0:
         return gw["starter_id"]
     if len(preds) == 1:
-        return next(p["telegram_id"] for p in players if p["telegram_id"] != gw["starter_id"])
+        return next(
+            (p["telegram_id"] for p in players if p["telegram_id"] != gw["starter_id"]),
+            None,
+        )
     return None
 
 
@@ -53,7 +61,10 @@ def determine_starter(players, last_gw, fallback_telegram_id):
     """Turn alternates every gameweek. First-ever gameweek: whoever kicks it off."""
     if last_gw is None:
         return fallback_telegram_id
-    return next(p["telegram_id"] for p in players if p["telegram_id"] != last_gw["starter_id"])
+    return next(
+        (p["telegram_id"] for p in players if p["telegram_id"] != last_gw["starter_id"]),
+        fallback_telegram_id,
+    )
 
 
 def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard):
@@ -81,6 +92,14 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
         pass
 
     preds = db.get_predictions(gw["id"])
+    if len(players) < 2:
+        return {
+            "ok": False,
+            "message": "Need 2 registered players before making predictions.",
+            "gw": gw,
+            "next_player": None,
+            "chat_announcement": None,
+        }
     allowed = allowed_predictor(gw, preds, players)
     if allowed is None:
         return {"ok": False, "message": "Both predictions are already in for this match.",

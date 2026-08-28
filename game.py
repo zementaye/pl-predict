@@ -135,10 +135,16 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
 
 
 def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
+    """Returns the newly-active gameweek, or None if someone else locked in a
+    (different) fixture for this chat in the same instant — the caller should
+    show a friendly "someone beat you to it" message rather than proceeding as
+    if their own fixture won."""
     gw_id = db.create_gameweek(
         chat_id=chat_id, gw_number=gw_number, match_id=match_id,
         home=home, away=away, kickoff=kickoff, starter_id=starter_id,
     )
+    if gw_id is None:
+        return None
     return db.get_active_gameweek(chat_id)
 
 

@@ -246,6 +246,11 @@ def api_lockmatch():
         kickoff=body["kickoff"],
         starter_id=starter_id,
     )
+    if gw is None:
+        return jsonify({
+            "ok": False,
+            "message": "Someone already locked in a different fixture just now. Pull to refresh and predict on that one instead.",
+        }), 409
     starter_name = next(p["name"] for p in players if p["telegram_id"] == starter_id)
     notify_chat(
         f"New gameweek locked in via the app: {gw['home_team']} vs {gw['away_team']}. "

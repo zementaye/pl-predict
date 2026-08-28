@@ -2,6 +2,7 @@ import os
 from contextlib import contextmanager
 
 import psycopg2
+import psycopg2.errors
 import psycopg2.extras
 
 SCHEMA = """
@@ -44,8 +45,36 @@ CREATE TABLE IF NOT EXISTS settings (
 # Runs on every startup. CREATE TABLE IF NOT EXISTS above won't add columns to
 # a table that already exists (e.g. on Neon from before this feature), so this
 # migrates existing deployments forward. Safe to run repeatedly.
+#
+# The two-players-one-fixture rule was only enforced in Python as a
+# check-then-insert, which isn't atomic: if both players locked in a fixture
+# at the same moment (e.g. one via the bot, one via the web app), both checks
+# could pass before either write landed, leaving two "active" gameweeks for
+# the same chat. get_active_gameweek only ever returns the newest one, so the
+# first player's match — and their prediction on it — silently fell off,
+# while the other player ended up predicting a completely different match.
+#
+# Before adding a unique index to enforce this at the DB level, clean up any
+# such duplicates a past race may have already left behind: for each chat,
+# keep only the newest "active" gameweek and mark any older still-"active"
+# ones abandoned, so the index below doesn't fail to create on a DB that
+# already has the bug's leftovers.
 MIGRATIONS = """
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS wildcard BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS abandoned_reason TEXT;
+
+UPDATE gameweeks SET status = 'abandoned', abandoned_reason = 'superseded by a later gameweek for the same chat (pre-fix race condition)'
+WHERE status IN ('awaiting_predictions', 'predicted')
+AND id NOT IN (
+    SELECT DISTINCT ON (chat_id) id FROM gameweeks
+    WHERE status IN ('awaiting_predictions', 'predicted')
+    ORDER BY chat_id, id DESC
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS gameweeks_one_active_per_chat
+ON gameweeks (chat_id)
+WHERE status IN ('awaiting_predictions', 'predicted');
 """
 
 
@@ -115,13 +144,22 @@ def get_active_gameweek(chat_id):
 
 
 def create_gameweek(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
+    """Returns the new gameweek's id, or None if another gameweek is already
+    active for this chat (see gameweeks_one_active_per_chat) — the caller
+    lost a race with someone else locking in a fixture at the same moment."""
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO gameweeks (chat_id, gw_number, match_id, home_team, away_team, kickoff, starter_id) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (chat_id, gw_number, match_id, home, away, kickoff, starter_id),
-            )
+            try:
+                cur.execute(
+                    "INSERT INTO gameweeks (chat_id, gw_number, match_id, home_team, away_team, kickoff, starter_id) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (chat_id, gw_number, match_id, home, away, kickoff, starter_id),
+                )
+            except psycopg2.errors.UniqueViolation as e:
+                conn.rollback()
+                if e.diag.constraint_name == "gameweeks_one_active_per_chat":
+                    return None
+                raise  # a different constraint (e.g. duplicate match_id) — a real bug, don't hide it
             return cur.fetchone()["id"]
 
 

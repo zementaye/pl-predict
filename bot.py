@@ -107,6 +107,8 @@ async def lock_in_match(chat_id, idx, context, fixtures):
         starter_id=context.chat_data["starter_id"],
     )
     context.chat_data.pop("fixtures", None)
+    if gw is None:
+        return None, "Someone already locked in a different fixture just now. Run /pending to see what's active."
     return gw, None
 
 

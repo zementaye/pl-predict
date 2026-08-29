@@ -110,15 +110,33 @@ def get_last_gameweek(chat_id):
             return cur.fetchone()
 
 
-def get_active_gameweek(chat_id):
+def get_open_gameweeks(chat_id):
+    """All fixtures that are locked in but not yet finished, for this chat —
+    there can be several at once (predicting ahead doesn't require earlier
+    fixtures to finish first). Ordered soonest-kickoff-first so the app and
+    bot always work through them in the same order."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT * FROM gameweeks WHERE chat_id=%s AND status IN ('awaiting_predictions','predicted') "
-                "ORDER BY id DESC LIMIT 1",
+                "ORDER BY kickoff ASC, id ASC",
                 (chat_id,),
             )
+            return cur.fetchall()
+
+
+def get_gameweek(gameweek_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM gameweeks WHERE id=%s", (gameweek_id,))
             return cur.fetchone()
+
+
+def match_id_taken(match_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM gameweeks WHERE match_id=%s", (match_id,))
+            return cur.fetchone() is not None
 
 
 def create_gameweek(chat_id, gw_number, match_id, home, away, kickoff, starter_id):

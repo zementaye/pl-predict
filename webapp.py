@@ -101,14 +101,13 @@ def api_state():
         }
 
     chat_id = the_chat_id()
-    active_gw = None
+    active_gws = []
     if chat_id:
-        gw = db.get_active_gameweek(chat_id)
-        if gw:
+        for gw in db.get_open_gameweeks(chat_id):
             preds = db.get_predictions(gw["id"])
             allowed = game.allowed_predictor(gw, preds, players)
             edit_req = db.get_edit_request(gw["id"])
-            active_gw = {
+            active_gws.append({
                 "id": gw["id"],
                 "gw_number": gw["gw_number"],
                 "home": gw["home_team"],
@@ -130,7 +129,7 @@ def api_state():
                     "requester_id": edit_req["requester_id"],
                     "status": edit_req["status"],
                 } if edit_req else None,
-            }
+            })
 
     history_rows = db.full_history()
     history = []
@@ -161,7 +160,7 @@ def api_state():
         "me": me,
         "players": [{"telegram_id": p["telegram_id"], "name": p["name"]} for p in players],
         "leaderboard": [{"name": r["name"], "total": r["total"]} for r in db.leaderboard()],
-        "active_gameweek": active_gw,
+        "active_gameweeks": active_gws,
         "history": history,
         "max_score": game.MAX_SCORE,
         "setup_needed": chat_id is None,
@@ -185,8 +184,9 @@ def api_predict():
     except (KeyError, TypeError, ValueError):
         return jsonify({"ok": False, "message": "Invalid score."}), 400
     wildcard = bool(body.get("wildcard"))
+    gw_id = body.get("gw_id")
 
-    result = game.submit_prediction(chat_id, user["id"], user.get("first_name", "Player"), h, a, wildcard)
+    result = game.submit_prediction(chat_id, user["id"], user.get("first_name", "Player"), h, a, wildcard, gw_id=gw_id)
     if result["ok"] and result.get("chat_announcement"):
         notify_chat(result["chat_announcement"] + "\n\n(via the app)")
 
@@ -203,7 +203,8 @@ def api_requestedit():
     if not chat_id:
         return jsonify({"ok": False, "message": "No game set up yet."}), 400
 
-    result = game.request_edit(chat_id, user["id"], user.get("first_name", "Player"))
+    body = request.get_json(silent=True) or {}
+    result = game.request_edit(chat_id, user["id"], user.get("first_name", "Player"), gw_id=body.get("gw_id"))
     if result["ok"] and result.get("chat_announcement"):
         notify_chat(result["chat_announcement"] + "\n\n(via the app)")
     return jsonify({"ok": result["ok"], "message": result["message"]})
@@ -219,7 +220,8 @@ def api_approveedit():
     if not chat_id:
         return jsonify({"ok": False, "message": "No game set up yet."}), 400
 
-    result = game.approve_edit(chat_id, user["id"], user.get("first_name", "Player"))
+    body = request.get_json(silent=True) or {}
+    result = game.approve_edit(chat_id, user["id"], user.get("first_name", "Player"), gw_id=body.get("gw_id"))
     if result["ok"] and result.get("chat_announcement"):
         notify_chat(result["chat_announcement"] + "\n\n(via the app)")
     return jsonify({"ok": result["ok"], "message": result["message"]})
@@ -243,7 +245,7 @@ def api_editpredict():
         return jsonify({"ok": False, "message": "Invalid score."}), 400
     wildcard = bool(body.get("wildcard"))
 
-    result = game.edit_prediction(chat_id, user["id"], user.get("first_name", "Player"), h, a, wildcard)
+    result = game.edit_prediction(chat_id, user["id"], user.get("first_name", "Player"), h, a, wildcard, gw_id=body.get("gw_id"))
     if result["ok"] and result.get("chat_announcement"):
         notify_chat(result["chat_announcement"] + "\n\n(via the app)")
     return jsonify({"ok": result["ok"], "message": result["message"]})
@@ -271,6 +273,7 @@ def api_newgameweek_fixtures():
             "kickoff": m["utcDate"],
         }
         for m in matches
+        if not db.match_id_taken(m["id"])
     ]
     return jsonify({"ok": True, "matchday": matchday, "fixtures": fixtures})
 
@@ -288,13 +291,14 @@ def api_lockmatch():
     players = db.get_players()
     if len(players) < 2:
         return jsonify({"ok": False, "message": "Need 2 registered players first — both of you send /start to the bot."}), 400
-    if db.get_active_gameweek(chat_id):
-        return jsonify({"ok": False, "message": "There's already an active gameweek. Finish it before starting a new one."}), 400
 
     body = request.get_json(silent=True) or {}
     required = ("matchday", "match_id", "home", "away", "kickoff")
     if not all(k in body for k in required):
         return jsonify({"ok": False, "message": "Missing fixture details."}), 400
+
+    if db.match_id_taken(body["match_id"]):
+        return jsonify({"ok": False, "message": "That fixture's already locked in."}), 400
 
     last_gw = db.get_last_gameweek(chat_id)
     starter_id = game.determine_starter(players, last_gw, user["id"])
@@ -321,21 +325,37 @@ def api_results():
     if not chat_id:
         return jsonify({"ok": False, "message": "No game set up yet."}), 400
 
-    gw = db.get_active_gameweek(chat_id)
-    if not gw or gw["status"] != "predicted":
-        return jsonify({"ok": False, "message": "No fixture is fully predicted and awaiting a result right now."})
+    body = request.get_json(silent=True) or {}
+    gw_id = body.get("gw_id")
 
-    try:
-        text = game.check_and_score_gameweek(gw)
-    except Exception as e:
-        log.exception("Failed to fetch match result")
-        return jsonify({"ok": False, "message": f"Couldn't check the result: {e}"}), 502
+    if gw_id is not None:
+        gw = db.get_gameweek(gw_id)
+        if not gw or gw["chat_id"] != chat_id or gw["status"] != "predicted":
+            return jsonify({"ok": False, "message": "That fixture isn't fully predicted and awaiting a result."})
+        candidates = [gw]
+    else:
+        candidates = [g for g in db.get_open_gameweeks(chat_id) if g["status"] == "predicted"]
+        if not candidates:
+            return jsonify({"ok": False, "message": "No fixture is fully predicted and awaiting a result right now."})
 
-    if text is None:
-        return jsonify({"ok": False, "message": "Match hasn't finished yet."})
+    checked_texts = []
+    any_finished = False
+    for gw in candidates:
+        try:
+            text = game.check_and_score_gameweek(gw)
+        except Exception as e:
+            log.exception("Failed to fetch match result for gameweek %s", gw["id"])
+            continue
+        if text is not None:
+            any_finished = True
+            checked_texts.append(text)
+            notify_chat(text)
 
-    notify_chat(text)
-    return jsonify({"ok": True, "message": text})
+    if not any_finished:
+        msg = "Match hasn't finished yet." if gw_id is not None else "None of those matches have finished yet."
+        return jsonify({"ok": False, "message": msg})
+
+    return jsonify({"ok": True, "message": "\n\n".join(checked_texts)})
 
 
 if __name__ == "__main__":

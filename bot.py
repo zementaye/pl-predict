@@ -94,6 +94,10 @@ async def lock_in_match(chat_id, idx, context, fixtures):
         return None, "That number isn't in the list."
 
     match = fixtures[idx]
+    if db.match_id_taken(match["id"]):
+        context.chat_data.pop("fixtures", None)
+        return None, "That fixture's already locked in."
+
     home = match["homeTeam"]["shortName"] or match["homeTeam"]["name"]
     away = match["awayTeam"]["shortName"] or match["awayTeam"]["name"]
 
@@ -121,9 +125,9 @@ async def prompt_prediction(bot, chat_id, gw, player_id, players):
     )
 
 
-async def submit_prediction(chat_id, user, pred_h, pred_a, wildcard, context):
+async def submit_prediction(chat_id, user, pred_h, pred_a, wildcard, context, gw_id=None):
     """Returns (ok, message, gw, players, next_player_id_or_None)."""
-    result = game.submit_prediction(chat_id, user.id, user.first_name, pred_h, pred_a, wildcard)
+    result = game.submit_prediction(chat_id, user.id, user.first_name, pred_h, pred_a, wildcard, gw_id=gw_id)
     players = db.get_players()
     return result["ok"], result["message"], result["gw"], players, result["next_player"]
 
@@ -245,10 +249,6 @@ async def newgameweek(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Need 2 registered players first — both of you send /start.")
         return
 
-    if db.get_active_gameweek(chat_id):
-        await update.message.reply_text("There's already an active gameweek. Finish it before starting a new one.")
-        return
-
     matchday = int(context.args[0]) if context.args else None
     try:
         if matchday is None:
@@ -259,8 +259,9 @@ async def newgameweek(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Couldn't fetch fixtures: {e}")
         return
 
+    matches = [m for m in matches if not db.match_id_taken(m["id"])]
     if not matches:
-        await update.message.reply_text("No fixtures found for that matchday.")
+        await update.message.reply_text("No fixtures left to add for that matchday.")
         return
 
     last_gw = db.get_last_gameweek(chat_id)
@@ -333,28 +334,34 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You're not registered. Send /start first.")
         return
 
-    gw = db.get_active_gameweek(chat_id)
-    if not gw:
-        await update.message.reply_text("No active fixture. Run /newgameweek then pick a match first.")
-        return
-
-    preds = db.get_predictions(gw["id"])
-    edit_req = db.get_edit_request(gw["id"])
-    editing = bool(edit_req and edit_req["status"] == "approved" and edit_req["requester_id"] == user.id)
+    # Several fixtures can be open at once, so with no fixture named
+    # explicitly we default to: an in-progress edit of mine, if there is
+    # one; otherwise whichever open fixture is waiting on me to predict —
+    # letting a group work through fixtures one /predict at a time, in order.
+    editing_gw = game.gameweek_with_my_pending_edit(chat_id, user.id, players, "submit")
+    editing = editing_gw is not None
 
     if not context.args:
         # No score typed — open the interactive keypad instead.
         if editing:
+            gw = editing_gw
+            preds = db.get_predictions(gw["id"])
             mine = next((p for p in preds if p["telegram_id"] == user.id), None)
             start_h = mine["pred_home"] if mine else 0
             start_a = mine["pred_away"] if mine else 0
             start_wc = mine["wildcard"] if mine else False
+            context.chat_data["predict_gw_id"] = gw["id"]
             await update.message.reply_text(
                 f"{user.first_name}, editing your prediction for {gw['home_team']} vs {gw['away_team']}:",
                 reply_markup=build_score_keyboard(gw["home_team"], gw["away_team"], start_h, start_a, start_wc),
             )
             return
 
+        gw = game.gameweek_awaiting_me(chat_id, user.id, players)
+        if not gw:
+            await update.message.reply_text("No active fixture. Run /newgameweek then pick a match first.")
+            return
+        preds = db.get_predictions(gw["id"])
         allowed = allowed_predictor(gw, preds, players)
         if allowed is None:
             await update.message.reply_text("Both predictions are already in for this match.")
@@ -363,6 +370,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
             await update.message.reply_text(f"Not your turn — waiting on {allowed_name}.")
             return
+        context.chat_data["predict_gw_id"] = gw["id"]
         await prompt_prediction(context.bot, chat_id, gw, user.id, players)
         return
 
@@ -373,7 +381,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pred_h, pred_a, wildcard = int(m.group(1)), int(m.group(2)), bool(m.group(3))
 
     if editing:
-        result = game.edit_prediction(chat_id, user.id, user.first_name, pred_h, pred_a, wildcard)
+        result = game.edit_prediction(chat_id, user.id, user.first_name, pred_h, pred_a, wildcard, gw_id=editing_gw["id"])
         await update.message.reply_text(result["message"])
         return
 
@@ -389,9 +397,10 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     action = query.data.split(":")[1]
 
-    gw = db.get_active_gameweek(chat_id)
-    if not gw:
-        await query.answer("No active fixture right now.", show_alert=True)
+    gw_id = context.chat_data.get("predict_gw_id")
+    gw = db.get_gameweek(gw_id) if gw_id else None
+    if not gw or gw["chat_id"] != chat_id or gw["status"] == "finished":
+        await query.answer("No active fixture right now — run /predict again.", show_alert=True)
         return
     players = db.get_players()
     preds = db.get_predictions(gw["id"])
@@ -416,6 +425,7 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
     if action == "cancel":
         await query.answer()
+        context.chat_data.pop("predict_gw_id", None)
         await query.edit_message_text("Prediction cancelled. Run /predict to try again when you're ready.")
         return
     if action == "h+":
@@ -430,11 +440,12 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         wildcard = not wildcard
     elif action == "submit":
         await query.answer()
+        context.chat_data.pop("predict_gw_id", None)
         if editing:
-            result = game.edit_prediction(chat_id, user.id, user.first_name, h, a, wildcard)
+            result = game.edit_prediction(chat_id, user.id, user.first_name, h, a, wildcard, gw_id=gw["id"])
             await query.edit_message_text(result["message"])
             return
-        ok, msg, gw, players, next_player = await submit_prediction(chat_id, user, h, a, wildcard, context)
+        ok, msg, gw, players, next_player = await submit_prediction(chat_id, user, h, a, wildcard, context, gw_id=gw["id"])
         if ok:
             await query.edit_message_text(msg)
             if next_player:
@@ -467,22 +478,25 @@ async def approveedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    gw = db.get_active_gameweek(chat_id)
-    if not gw:
+    gws = game.open_gameweeks(chat_id)
+    if not gws:
         await update.message.reply_text("No active fixture right now. Run /newgameweek to start one.")
         return
     players = db.get_players()
-    preds = db.get_predictions(gw["id"])
-    msg = f"Current fixture: {gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})\n"
-    if len(preds) == 0:
-        starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
-        msg += f"Waiting on {starter_name} to predict first."
-    elif len(preds) == 1:
-        other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
-        msg += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}."
-    else:
-        msg += "Both predictions are in, waiting on full time."
-    await update.message.reply_text(msg)
+    blocks = []
+    for gw in gws:
+        preds = db.get_predictions(gw["id"])
+        line = f"{gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})\n"
+        if len(preds) == 0:
+            starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
+            line += f"Waiting on {starter_name} to predict first."
+        elif len(preds) == 1:
+            other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
+            line += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}."
+        else:
+            line += "Both predictions are in, waiting on full time."
+        blocks.append(line)
+    await update.message.reply_text("\n\n".join(blocks))
 
 
 async def check_and_score_gameweek(gw, bot):
@@ -505,13 +519,17 @@ async def check_and_score_gameweek(gw, bot):
 
 async def results_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    gw = db.get_active_gameweek(chat_id)
-    if not gw or gw["status"] != "predicted":
+    candidates = [gw for gw in game.open_gameweeks(chat_id) if gw["status"] == "predicted"]
+    if not candidates:
         await update.message.reply_text("No fixture is fully predicted and awaiting a result right now.")
         return
-    text = await check_and_score_gameweek(gw, context.bot)
-    if text is None:
-        await update.message.reply_text("Match hasn't finished yet — I'll keep checking automatically.")
+    any_finished = False
+    for gw in candidates:
+        text = await check_and_score_gameweek(gw, context.bot)
+        if text is not None:
+            any_finished = True
+    if not any_finished:
+        await update.message.reply_text("None of those matches have finished yet — I'll keep checking automatically.")
 
 
 async def auto_check_job(context: ContextTypes.DEFAULT_TYPE):

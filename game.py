@@ -56,18 +56,87 @@ def determine_starter(players, last_gw, fallback_telegram_id):
     return next(p["telegram_id"] for p in players if p["telegram_id"] != last_gw["starter_id"])
 
 
-def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard):
+def open_gameweeks(chat_id):
+    """All not-yet-finished fixtures for this chat, soonest kickoff first."""
+    return db.get_open_gameweeks(chat_id)
+
+
+def _resolve_gameweek(chat_id, gw_id):
+    """Looks up an explicit fixture by id (used by the app, which always
+    knows which card the person tapped) and makes sure it actually belongs
+    to this chat and isn't finished yet."""
+    if gw_id is None:
+        return None, "No fixture specified."
+    gw = db.get_gameweek(gw_id)
+    if not gw or gw["chat_id"] != chat_id:
+        return None, "That fixture doesn't exist."
+    if gw["status"] == "finished":
+        return None, "That fixture is already finished."
+    return gw, None
+
+
+def gameweek_awaiting_me(chat_id, telegram_id, players):
+    """For text-based bot commands that don't name a fixture: the soonest
+    open fixture where it's this player's turn to predict, so working
+    through several open fixtures in order 'just works' one /predict at a
+    time. Falls back to the soonest open fixture overall (e.g. so /pending
+    still has something to show) if it isn't this player's turn on any."""
+    gws = db.get_open_gameweeks(chat_id)
+    if not gws:
+        return None
+    for gw in gws:
+        preds = db.get_predictions(gw["id"])
+        if allowed_predictor(gw, preds, players) == telegram_id:
+            return gw
+    return gws[0]
+
+
+def gameweek_with_my_pending_edit(chat_id, telegram_id, players, role):
+    """Finds the open fixture relevant to an edit-request action, when the
+    caller (bot text command) didn't name one explicitly.
+    role='request'  -> soonest fixture where I've already predicted (so I
+                        have something to ask to change).
+    role='approve'  -> soonest fixture with a pending edit request from the
+                        other player.
+    role='submit'   -> soonest fixture where my edit request is approved.
+    """
+    gws = db.get_open_gameweeks(chat_id)
+    for gw in gws:
+        edit_req = db.get_edit_request(gw["id"])
+        if role == "request":
+            preds = db.get_predictions(gw["id"])
+            if any(p["telegram_id"] == telegram_id for p in preds):
+                return gw
+        elif role == "approve":
+            if edit_req and edit_req["status"] == "pending" and edit_req["requester_id"] != telegram_id:
+                return gw
+        elif role == "submit":
+            if edit_req and edit_req["status"] == "approved" and edit_req["requester_id"] == telegram_id:
+                return gw
+    return None
+
+
+def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard, gw_id=None):
     """Apply one player's prediction, enforcing turn order, the no-duplicate-score
     rule, and the kickoff cutoff. Returns a plain dict:
       ok, message, gw (or None), next_player (telegram_id or None),
       chat_announcement (text worth relaying to the group, or None)
+
+    gw_id names the fixture explicitly (the app always passes this, since
+    several fixtures can be open at once). When omitted (bot text commands),
+    it's resolved to whichever open fixture is waiting on this player.
     """
     players = db.get_players()
     if not any(p["telegram_id"] == telegram_id for p in players):
         return {"ok": False, "message": "You're not registered. Send /start to the bot first.",
                 "gw": None, "next_player": None, "chat_announcement": None}
 
-    gw = db.get_active_gameweek(chat_id)
+    if gw_id is not None:
+        gw, err = _resolve_gameweek(chat_id, gw_id)
+        if err:
+            return {"ok": False, "message": err, "gw": None, "next_player": None, "chat_announcement": None}
+    else:
+        gw = gameweek_awaiting_me(chat_id, telegram_id, players)
     if not gw:
         return {"ok": False, "message": "No active fixture. Run /newgameweek then pick a match first.",
                 "gw": None, "next_player": None, "chat_announcement": None}
@@ -123,7 +192,7 @@ def _kickoff_passed(gw):
         return False
 
 
-def request_edit(chat_id, telegram_id, display_name):
+def request_edit(chat_id, telegram_id, display_name, gw_id=None):
     """A player asks to change a prediction they've already submitted. Takes
     effect only once the other player approves it via approve_edit()."""
     players = db.get_players()
@@ -131,7 +200,12 @@ def request_edit(chat_id, telegram_id, display_name):
         return {"ok": False, "message": "You're not registered. Send /start to the bot first.",
                 "chat_announcement": None}
 
-    gw = db.get_active_gameweek(chat_id)
+    if gw_id is not None:
+        gw, err = _resolve_gameweek(chat_id, gw_id)
+        if err:
+            return {"ok": False, "message": err, "chat_announcement": None}
+    else:
+        gw = gameweek_with_my_pending_edit(chat_id, telegram_id, players, "request")
     if not gw:
         return {"ok": False, "message": "No active fixture.", "chat_announcement": None}
 
@@ -153,10 +227,15 @@ def request_edit(chat_id, telegram_id, display_name):
             "chat_announcement": msg}
 
 
-def approve_edit(chat_id, telegram_id, display_name):
+def approve_edit(chat_id, telegram_id, display_name, gw_id=None):
     """The other player agrees to let the requester submit a new score."""
     players = db.get_players()
-    gw = db.get_active_gameweek(chat_id)
+    if gw_id is not None:
+        gw, err = _resolve_gameweek(chat_id, gw_id)
+        if err:
+            return {"ok": False, "message": err, "chat_announcement": None}
+    else:
+        gw = gameweek_with_my_pending_edit(chat_id, telegram_id, players, "approve")
     if not gw:
         return {"ok": False, "message": "No active fixture.", "chat_announcement": None}
 
@@ -173,11 +252,16 @@ def approve_edit(chat_id, telegram_id, display_name):
     return {"ok": True, "message": "Approved.", "chat_announcement": msg}
 
 
-def edit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard):
+def edit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard, gw_id=None):
     """Overwrites the requester's existing prediction, but only once the
     other player has approved the pending edit request."""
     players = db.get_players()
-    gw = db.get_active_gameweek(chat_id)
+    if gw_id is not None:
+        gw, err = _resolve_gameweek(chat_id, gw_id)
+        if err:
+            return {"ok": False, "message": err, "gw": None, "chat_announcement": None}
+    else:
+        gw = gameweek_with_my_pending_edit(chat_id, telegram_id, players, "submit")
     if not gw:
         return {"ok": False, "message": "No active fixture.", "gw": None, "chat_announcement": None}
 
@@ -209,7 +293,7 @@ def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id)
         chat_id=chat_id, gw_number=gw_number, match_id=match_id,
         home=home, away=away, kickoff=kickoff, starter_id=starter_id,
     )
-    return db.get_active_gameweek(chat_id)
+    return db.get_gameweek(gw_id)
 
 
 def check_and_score_gameweek(gw):

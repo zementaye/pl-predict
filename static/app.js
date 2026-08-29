@@ -13,9 +13,9 @@
   var tabbar = document.getElementById("tabbar");
   var activeTab = "fixture";
   var state = null;          // last /api/state payload
-  var draft = null;          // { gwId, home, away, wildcard } — the score being built
-  var editDraft = null;      // same shape, but for an already-submitted prediction being edited
-  var newGwFixtures = null;  // fixtures list while picking a match
+  var drafts = {};           // gwId -> { home, away, wildcard } — new predictions being built
+  var editDrafts = {};       // gwId -> same shape, for an already-submitted prediction being edited
+  var newGwFixtures = null;  // fixtures list while picking a match to add
 
   function apiFetch(path, opts) {
     opts = opts || {};
@@ -44,6 +44,12 @@
   function loadState() {
     return apiFetch("/api/state").then(function (res) {
       state = res.body;
+      // Drop drafts for fixtures that are no longer open (finished, or the
+      // player navigated away and back) so stale scores don't linger.
+      var openIds = {};
+      (state.active_gameweeks || []).forEach(function (gw) { openIds[gw.id] = true; });
+      Object.keys(drafts).forEach(function (id) { if (!openIds[id]) delete drafts[id]; });
+      Object.keys(editDrafts).forEach(function (id) { if (!openIds[id]) delete editDrafts[id]; });
       render();
     }).catch(function () {
       content.innerHTML = '<div class="error-banner">Couldn\u2019t reach the server. Pull down to retry, or reopen the app.</div>';
@@ -72,48 +78,36 @@
   }
 
   // Renders one team-per-row score picker: team name on the left, that
-  // team's own [-][score][+] on the right, right next to it. Using
-  // `prefix` to namespace element ids/data lets the same markup serve both
-  // the "new prediction" draft and the "editing an existing one" draft.
-  function scoreEntryMarkup(homeName, awayName, home, away, prefix) {
+  // team's own [-][score][+] on the right, right next to it. `gwId` +
+  // `which` ("new" or "edit") namespace the element ids and the
+  // data-attributes used for delegated click handling, so the same markup
+  // can appear in several fixture cards on screen at once.
+  function scoreEntryMarkup(homeName, awayName, home, away, gwId, which) {
+    var idBase = which + gwId;
     return '<div class="score-entry">' +
       '<div class="score-team-row">' +
         '<span class="score-team-name">' + esc(homeName) + '</span>' +
         '<div class="score-control">' +
-          '<button class="step-btn" data-adj="h-1" data-prefix="' + prefix + '">\u2212</button>' +
-          '<span class="score-box" id="' + prefix + 'HomeScore">' + home + '</span>' +
-          '<button class="step-btn" data-adj="h+1" data-prefix="' + prefix + '">+</button>' +
+          '<button class="step-btn" data-action="step" data-gw="' + gwId + '" data-which="' + which + '" data-adj="h-1">\u2212</button>' +
+          '<span class="score-box" id="' + idBase + 'HomeScore">' + home + '</span>' +
+          '<button class="step-btn" data-action="step" data-gw="' + gwId + '" data-which="' + which + '" data-adj="h+1">+</button>' +
         '</div>' +
       '</div>' +
       '<div class="score-team-row">' +
         '<span class="score-team-name">' + esc(awayName) + '</span>' +
         '<div class="score-control">' +
-          '<button class="step-btn" data-adj="a-1" data-prefix="' + prefix + '">\u2212</button>' +
-          '<span class="score-box" id="' + prefix + 'AwayScore">' + away + '</span>' +
-          '<button class="step-btn" data-adj="a+1" data-prefix="' + prefix + '">+</button>' +
+          '<button class="step-btn" data-action="step" data-gw="' + gwId + '" data-which="' + which + '" data-adj="a-1">\u2212</button>' +
+          '<span class="score-box" id="' + idBase + 'AwayScore">' + away + '</span>' +
+          '<button class="step-btn" data-action="step" data-gw="' + gwId + '" data-which="' + which + '" data-adj="a+1">+</button>' +
         '</div>' +
       '</div>' +
     '</div>';
   }
 
-  function attachScoreEntryHandlers(prefix, draftObj) {
-    Array.prototype.forEach.call(content.querySelectorAll('[data-prefix="' + prefix + '"]'), function (btn) {
-      btn.addEventListener("click", function () {
-        var adj = btn.dataset.adj;
-        if (adj === "h-1") draftObj.home = Math.max(0, draftObj.home - 1);
-        if (adj === "h+1") draftObj.home = Math.min(state.max_score, draftObj.home + 1);
-        if (adj === "a-1") draftObj.away = Math.max(0, draftObj.away - 1);
-        if (adj === "a+1") draftObj.away = Math.min(state.max_score, draftObj.away + 1);
-        document.getElementById(prefix + "HomeScore").textContent = draftObj.home;
-        document.getElementById(prefix + "AwayScore").textContent = draftObj.away;
-      });
-    });
-  }
-
   // What to show below the predictions once I've already predicted this
-  // gameweek: a way to ask for an edit, or the state of a pending/approved
+  // fixture: a way to ask for an edit, or the state of a pending/approved
   // edit request (mine or the other player's).
-  function editControlsHtml(me, myPred, editReq) {
+  function editControlsHtml(gwId, me, myPred, editReq) {
     if (!me || !myPred) return "";
     if (editReq) {
       if (editReq.status === "pending") {
@@ -121,39 +115,20 @@
           return '<div class="edit-banner">Waiting on the other player to approve your edit request.</div>';
         }
         return '<div class="edit-banner">The other player wants to change their prediction.</div>' +
-          '<div class="edit-row"><button class="btn btn-ghost btn-small" id="approveEditBtn">Approve edit request</button></div>';
+          '<div class="edit-row"><button class="btn btn-ghost btn-small" data-action="approve-edit" data-gw="' + gwId + '">Approve edit request</button></div>';
       }
       if (editReq.status === "approved" && editReq.requester_id !== me.telegram_id) {
         return '<div class="edit-banner">Waiting on the other player to submit their new score.</div>';
       }
       return "";
     }
-    return '<div class="edit-row"><button class="btn btn-ghost btn-small" id="requestEditBtn">Request to edit my prediction</button></div>';
+    return '<div class="edit-row"><button class="btn btn-ghost btn-small" data-action="request-edit" data-gw="' + gwId + '">Request to edit my prediction</button></div>';
   }
 
-  function renderFixture() {
-    if (state.setup_needed) {
-      content.innerHTML = '<div class="empty">No game set up yet.<br>Send <b>/start</b> to the bot in your group to get going.</div>';
-      return;
-    }
-
-    var gw = state.active_gameweek;
-    if (!gw) {
-      newGwFixtures = null;
-      editDraft = null;
-      content.innerHTML =
-        '<div class="empty">No active fixture right now.</div>' +
-        (state.players.length < 2
-          ? '<div class="status-line">Need 2 registered players \u2014 send /start to the bot.</div>'
-          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>');
-      var b = document.getElementById("startGwBtn");
-      if (b) b.addEventListener("click", startNewGameweek);
-      return;
-    }
-
-    if (draft == null || draft.gwId !== gw.id) {
-      draft = { gwId: gw.id, home: 0, away: 0, wildcard: false };
-    }
+  // Builds the markup for a single open fixture card.
+  function fixtureCardHtml(gw) {
+    if (drafts[gw.id] == null) drafts[gw.id] = { home: 0, away: 0, wildcard: false };
+    var draft = drafts[gw.id];
 
     var me = state.me;
     var myTurn = gw.allowed_telegram_id != null && me && me.telegram_id === gw.allowed_telegram_id;
@@ -168,17 +143,17 @@
     var iAmApprovedEditor = !!(editReq && editReq.status === "approved" && me && editReq.requester_id === me.telegram_id);
 
     if (iAmApprovedEditor) {
-      if (editDraft == null || editDraft.gwId !== gw.id) {
-        editDraft = {
-          gwId: gw.id,
+      if (editDrafts[gw.id] == null) {
+        editDrafts[gw.id] = {
           home: myPred ? myPred.home : 0,
           away: myPred ? myPred.away : 0,
           wildcard: myPred ? myPred.wildcard : false,
         };
       }
     } else {
-      editDraft = null;
+      delete editDrafts[gw.id];
     }
+    var editDraft = editDrafts[gw.id];
 
     var predsHtml = gw.predictions.map(function (p) {
       return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
@@ -190,9 +165,9 @@
     html += '<div class="scoreboard-header"><span class="gw">GW ' + esc(gw.gw_number) + '</span><span>' + esc(fmtKickoff(gw.kickoff)) + '</span></div>';
 
     if (myTurn) {
-      html += scoreEntryMarkup(gw.home, gw.away, draft.home, draft.away, "new");
+      html += scoreEntryMarkup(gw.home, gw.away, draft.home, draft.away, gw.id, "new");
     } else if (iAmApprovedEditor) {
-      html += scoreEntryMarkup(gw.home, gw.away, editDraft.home, editDraft.away, "edit");
+      html += scoreEntryMarkup(gw.home, gw.away, editDraft.home, editDraft.away, gw.id, "edit");
     } else {
       html += '<div class="scoreline">' +
         '<span class="team home">' + esc(gw.home) + '</span>' +
@@ -205,110 +180,153 @@
     if (myTurn) {
       html += '<div class="perforation"></div>';
       html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
-        '<button class="toggle' + (draft.wildcard ? ' on' : '') + '" id="wcToggle"></button></div>';
-      html += '<div class="submit-row"><button class="btn btn-primary" id="submitBtn">Submit prediction</button></div>';
+        '<button class="toggle' + (draft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="new"></button></div>';
+      html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit" data-gw="' + gw.id + '">Submit prediction</button></div>';
     } else if (iAmApprovedEditor) {
       html += '<div class="perforation"></div>';
       html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
-        '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" id="editWcToggle"></button></div>';
-      html += '<div class="submit-row"><button class="btn btn-primary" id="editSubmitBtn">Save new prediction</button></div>';
+        '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="edit"></button></div>';
+      html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit-edit" data-gw="' + gw.id + '">Save new prediction</button></div>';
     } else if (waitingOn) {
       html += '<div class="turn-banner">Waiting on ' + esc(waitingOn) + '</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">No predictions yet.</div>') + '</div>';
-      html += editControlsHtml(me, myPred, editReq);
+      html += editControlsHtml(gw.id, me, myPred, editReq);
     } else {
       html += '<div class="turn-banner">Both predictions are in \u2014 waiting on full time.</div>';
       html += '<div style="padding:0 16px 8px">' + predsHtml + '</div>';
-      html += editControlsHtml(me, myPred, editReq);
-      html += '<div class="submit-row"><button class="btn btn-ghost" id="checkResultBtn">Check result now</button></div>';
+      html += editControlsHtml(gw.id, me, myPred, editReq);
+      html += '<div class="submit-row"><button class="btn btn-ghost" data-action="check-result" data-gw="' + gw.id + '">Check result now</button></div>';
     }
 
     html += '</div>'; // .card
+    return html;
+  }
 
-    content.innerHTML = html;
-
-    if (myTurn) {
-      attachScoreEntryHandlers("new", draft);
-      var wc = document.getElementById("wcToggle");
-      if (wc) wc.addEventListener("click", function () {
-        draft.wildcard = !draft.wildcard;
-        wc.classList.toggle("on", draft.wildcard);
-      });
-      var sb = document.getElementById("submitBtn");
-      if (sb) sb.addEventListener("click", submitPrediction);
-    } else if (iAmApprovedEditor) {
-      attachScoreEntryHandlers("edit", editDraft);
-      var ewc = document.getElementById("editWcToggle");
-      if (ewc) ewc.addEventListener("click", function () {
-        editDraft.wildcard = !editDraft.wildcard;
-        ewc.classList.toggle("on", editDraft.wildcard);
-      });
-      var esb = document.getElementById("editSubmitBtn");
-      if (esb) esb.addEventListener("click", submitEdit);
+  function renderFixture() {
+    if (state.setup_needed) {
+      content.innerHTML = '<div class="empty">No game set up yet.<br>Send <b>/start</b> to the bot in your group to get going.</div>';
+      return;
     }
 
-    var crb = document.getElementById("checkResultBtn");
-    if (crb) crb.addEventListener("click", checkResult);
-    var reqBtn = document.getElementById("requestEditBtn");
-    if (reqBtn) reqBtn.addEventListener("click", requestEdit);
-    var appBtn = document.getElementById("approveEditBtn");
-    if (appBtn) appBtn.addEventListener("click", approveEdit);
+    if (newGwFixtures) {
+      renderFixtureList();
+      return;
+    }
+
+    var gws = state.active_gameweeks || [];
+
+    if (!gws.length) {
+      content.innerHTML =
+        '<div class="empty">No active fixture right now.</div>' +
+        (state.players.length < 2
+          ? '<div class="status-line">Need 2 registered players \u2014 send /start to the bot.</div>'
+          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>');
+      var b = document.getElementById("startGwBtn");
+      if (b) b.addEventListener("click", startNewGameweek);
+      return;
+    }
+
+    var html = gws.map(fixtureCardHtml).join("");
+    if (state.players.length >= 2) {
+      html += '<div class="submit-row"><button class="btn btn-ghost" id="addFixtureBtn">+ Predict another fixture</button></div>';
+    }
+    content.innerHTML = html;
+
+    var addBtn = document.getElementById("addFixtureBtn");
+    if (addBtn) addBtn.addEventListener("click", startNewGameweek);
   }
 
-  function submitPrediction() {
-    var sb = document.getElementById("submitBtn");
-    if (sb) { sb.disabled = true; sb.textContent = "Submitting\u2026"; }
+  // Single delegated listener for every button inside a fixture card,
+  // across however many cards are on screen — avoids re-binding a fresh
+  // set of handlers per card on every render.
+  content.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    var action = btn.dataset.action;
+    var gwId = btn.dataset.gw ? Number(btn.dataset.gw) : null;
+
+    if (action === "step") {
+      var draftObj = btn.dataset.which === "edit" ? editDrafts[gwId] : drafts[gwId];
+      if (!draftObj) return;
+      var adj = btn.dataset.adj;
+      if (adj === "h-1") draftObj.home = Math.max(0, draftObj.home - 1);
+      if (adj === "h+1") draftObj.home = Math.min(state.max_score, draftObj.home + 1);
+      if (adj === "a-1") draftObj.away = Math.max(0, draftObj.away - 1);
+      if (adj === "a+1") draftObj.away = Math.min(state.max_score, draftObj.away + 1);
+      var idBase = btn.dataset.which + gwId;
+      document.getElementById(idBase + "HomeScore").textContent = draftObj.home;
+      document.getElementById(idBase + "AwayScore").textContent = draftObj.away;
+    } else if (action === "toggle-wc") {
+      var d = btn.dataset.which === "edit" ? editDrafts[gwId] : drafts[gwId];
+      if (!d) return;
+      d.wildcard = !d.wildcard;
+      btn.classList.toggle("on", d.wildcard);
+    } else if (action === "submit") {
+      submitPrediction(gwId, btn);
+    } else if (action === "submit-edit") {
+      submitEdit(gwId, btn);
+    } else if (action === "request-edit") {
+      requestEdit(gwId, btn);
+    } else if (action === "approve-edit") {
+      approveEdit(gwId, btn);
+    } else if (action === "check-result") {
+      checkResult(gwId, btn);
+    }
+  });
+
+  function submitPrediction(gwId, btn) {
+    var draft = drafts[gwId];
+    if (!draft) return;
+    if (btn) { btn.disabled = true; btn.textContent = "Submitting\u2026"; }
     apiFetch("/api/predict", {
       method: "POST",
-      body: JSON.stringify({ home: draft.home, away: draft.away, wildcard: draft.wildcard }),
+      body: JSON.stringify({ gw_id: gwId, home: draft.home, away: draft.away, wildcard: draft.wildcard }),
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
-      draft = null;
+      delete drafts[gwId];
       loadState();
       if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
 
-  function requestEdit() {
-    var btn = document.getElementById("requestEditBtn");
+  function requestEdit(gwId, btn) {
     if (btn) { btn.disabled = true; btn.textContent = "Requesting\u2026"; }
-    apiFetch("/api/requestedit", { method: "POST" }).then(function (res) {
+    apiFetch("/api/requestedit", { method: "POST", body: JSON.stringify({ gw_id: gwId }) }).then(function (res) {
       if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
       loadState();
     });
   }
 
-  function approveEdit() {
-    var btn = document.getElementById("approveEditBtn");
+  function approveEdit(gwId, btn) {
     if (btn) { btn.disabled = true; btn.textContent = "Approving\u2026"; }
-    apiFetch("/api/approveedit", { method: "POST" }).then(function (res) {
+    apiFetch("/api/approveedit", { method: "POST", body: JSON.stringify({ gw_id: gwId }) }).then(function (res) {
       if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
       loadState();
     });
   }
 
-  function submitEdit() {
-    var sb = document.getElementById("editSubmitBtn");
-    if (sb) { sb.disabled = true; sb.textContent = "Saving\u2026"; }
+  function submitEdit(gwId, btn) {
+    var editDraft = editDrafts[gwId];
+    if (!editDraft) return;
+    if (btn) { btn.disabled = true; btn.textContent = "Saving\u2026"; }
     apiFetch("/api/editpredict", {
       method: "POST",
-      body: JSON.stringify({ home: editDraft.home, away: editDraft.away, wildcard: editDraft.wildcard }),
+      body: JSON.stringify({ gw_id: gwId, home: editDraft.home, away: editDraft.away, wildcard: editDraft.wildcard }),
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
-      editDraft = null;
+      delete editDrafts[gwId];
       loadState();
       if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
 
-  function checkResult() {
-    var crb = document.getElementById("checkResultBtn");
-    if (crb) { crb.disabled = true; crb.textContent = "Checking\u2026"; }
-    apiFetch("/api/results", { method: "POST" }).then(function () { loadState(); });
+  function checkResult(gwId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Checking\u2026"; }
+    apiFetch("/api/results", { method: "POST", body: JSON.stringify({ gw_id: gwId }) }).then(function () { loadState(); });
   }
 
   function startNewGameweek() {
-    var btn = document.getElementById("startGwBtn");
+    var btn = document.getElementById("startGwBtn") || document.getElementById("addFixtureBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Fetching fixtures\u2026"; }
     apiFetch("/api/newgameweek").then(function (res) {
       if (!res.body.ok) {
@@ -322,7 +340,10 @@
 
   function renderFixtureList() {
     if (!newGwFixtures || !newGwFixtures.fixtures.length) {
-      content.innerHTML = '<div class="empty">No fixtures found for that matchday.</div>';
+      content.innerHTML = '<div class="empty">No more fixtures to add for that matchday.</div>' +
+        '<div class="submit-row"><button class="btn btn-ghost" id="cancelAddBtn">Back</button></div>';
+      var cb0 = document.getElementById("cancelAddBtn");
+      if (cb0) cb0.addEventListener("click", function () { newGwFixtures = null; render(); });
       return;
     }
     var rows = newGwFixtures.fixtures.map(function (f, i) {
@@ -335,10 +356,13 @@
     }).join("");
     content.innerHTML =
       '<div class="status-line">Matchday ' + esc(newGwFixtures.matchday) + ' \u2014 tap a fixture to lock it in</div>' +
-      '<div class="card">' + rows + '</div>';
+      '<div class="card">' + rows + '</div>' +
+      '<div class="submit-row"><button class="btn btn-ghost" id="cancelAddBtn">Cancel</button></div>';
     Array.prototype.forEach.call(content.querySelectorAll(".fixture-row"), function (btn) {
       btn.addEventListener("click", function () { lockMatch(newGwFixtures.fixtures[+btn.dataset.idx]); });
     });
+    var cb = document.getElementById("cancelAddBtn");
+    if (cb) cb.addEventListener("click", function () { newGwFixtures = null; render(); });
   }
 
   function lockMatch(f) {

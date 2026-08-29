@@ -428,21 +428,30 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     gw = db.get_active_gameweek(chat_id)
-    if not gw:
+    pending_results = db.get_pending_results(chat_id)
+
+    if not gw and not pending_results:
         await update.message.reply_text("No active fixture right now. Run /newgameweek to start one.")
         return
+
     players = db.get_players()
-    preds = db.get_predictions(gw["id"])
-    msg = f"Current fixture: {gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})\n"
-    if len(preds) == 0:
-        starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
-        msg += f"Waiting on {starter_name} to predict first."
-    elif len(preds) == 1:
-        other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
-        msg += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}."
-    else:
-        msg += "Both predictions are in, waiting on full time."
-    await update.message.reply_text(msg)
+    lines = []
+    if gw:
+        preds = db.get_predictions(gw["id"])
+        lines.append(f"Current fixture: {gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})")
+        if len(preds) == 0:
+            starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
+            lines.append(f"Waiting on {starter_name} to predict first.")
+        elif len(preds) == 1:
+            other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
+            lines.append(f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}.")
+    if pending_results:
+        if lines:
+            lines.append("")
+        lines.append("Waiting on full time for:")
+        for pgw in pending_results:
+            lines.append(f"- {pgw['home_team']} vs {pgw['away_team']} (GW{pgw['gw_number']})")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def check_and_score_gameweek(gw, bot):
@@ -465,12 +474,16 @@ async def check_and_score_gameweek(gw, bot):
 
 async def results_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    gw = db.get_active_gameweek(chat_id)
-    if not gw or gw["status"] != "predicted":
+    pending_results = db.get_pending_results(chat_id)
+    if not pending_results:
         await update.message.reply_text("No fixture is fully predicted and awaiting a result right now.")
         return
-    text = await check_and_score_gameweek(gw, context.bot)
-    if text is None:
+    any_finished = False
+    for gw in pending_results:
+        text = await check_and_score_gameweek(gw, context.bot)
+        if text is not None:
+            any_finished = True
+    if not any_finished:
         await update.message.reply_text("Match hasn't finished yet — I'll keep checking automatically.")
 
 

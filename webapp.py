@@ -152,11 +152,34 @@ def api_state():
         })
     history.reverse()  # most recent gameweek first
 
+    pending_results = []
+    if chat_id:
+        for pgw in db.get_pending_results(chat_id):
+            preds = db.get_predictions(pgw["id"])
+            pending_results.append({
+                "id": pgw["id"],
+                "gw_number": pgw["gw_number"],
+                "home": pgw["home_team"],
+                "away": pgw["away_team"],
+                "kickoff": pgw["kickoff"],
+                "predictions": [
+                    {
+                        "telegram_id": p["telegram_id"],
+                        "name": game.player_name(p, players),
+                        "home": p["pred_home"],
+                        "away": p["pred_away"],
+                        "wildcard": p["wildcard"],
+                    }
+                    for p in preds
+                ],
+            })
+
     return jsonify({
         "me": me,
         "players": [{"telegram_id": p["telegram_id"], "name": p["name"]} for p in players],
         "leaderboard": [{"name": r["name"], "total": r["total"]} for r in db.leaderboard()],
         "active_gameweek": active_gw,
+        "pending_results": pending_results,
         "history": history,
         "max_score": game.MAX_SCORE,
         "setup_needed": chat_id is None,
@@ -265,21 +288,24 @@ def api_results():
     if not chat_id:
         return jsonify({"ok": False, "message": "No game set up yet."}), 400
 
-    gw = db.get_active_gameweek(chat_id)
-    if not gw or gw["status"] != "predicted":
+    pending_results = db.get_pending_results(chat_id)
+    if not pending_results:
         return jsonify({"ok": False, "message": "No fixture is fully predicted and awaiting a result right now."})
 
-    try:
-        text = game.check_and_score_gameweek(gw)
-    except Exception as e:
-        log.exception("Failed to fetch match result")
-        return jsonify({"ok": False, "message": f"Couldn't check the result: {e}"}), 502
+    texts = []
+    for gw in pending_results:
+        try:
+            text = game.check_and_score_gameweek(gw)
+        except Exception as e:
+            log.exception("Failed to fetch match result")
+            return jsonify({"ok": False, "message": f"Couldn't check the result: {e}"}), 502
+        if text is not None:
+            texts.append(text)
+            notify_chat(text)
 
-    if text is None:
+    if not texts:
         return jsonify({"ok": False, "message": "Match hasn't finished yet."})
-
-    notify_chat(text)
-    return jsonify({"ok": True, "message": text})
+    return jsonify({"ok": True, "message": "\n\n".join(texts)})
 
 
 if __name__ == "__main__":

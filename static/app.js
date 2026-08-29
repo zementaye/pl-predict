@@ -90,9 +90,12 @@
         '<div class="empty">No active fixture right now.</div>' +
         (state.players.length < 2
           ? '<div class="status-line">Need 2 registered players \u2014 send /start to the bot.</div>'
-          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>');
+          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>') +
+        renderPendingResultsHtml();
       var b = document.getElementById("startGwBtn");
       if (b) b.addEventListener("click", startNewGameweek);
+      var crb0 = document.getElementById("checkResultBtn");
+      if (crb0) crb0.addEventListener("click", checkResult);
       return;
     }
 
@@ -150,13 +153,10 @@
     } else if (waitingOn) {
       html += '<div class="turn-banner">Waiting on ' + esc(waitingOn) + '</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">No predictions yet.</div>') + '</div>';
-    } else {
-      html += '<div class="turn-banner">Both predictions are in \u2014 waiting on full time.</div>';
-      html += '<div style="padding:0 16px 8px">' + predsHtml + '</div>';
-      html += '<div class="submit-row"><button class="btn btn-ghost" id="checkResultBtn">Check result now</button></div>';
     }
 
     html += '</div>'; // .card
+    html += renderPendingResultsHtml();
 
     content.innerHTML = html;
 
@@ -182,6 +182,29 @@
     }
     var crb = document.getElementById("checkResultBtn");
     if (crb) crb.addEventListener("click", checkResult);
+  }
+
+  function renderPendingResultsHtml() {
+    var results = state.pending_results || [];
+    if (!results.length) return "";
+    var cards = results.map(function (pgw) {
+      var preds = pgw.predictions.map(function (p) {
+        return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
+          '</span><span>' + p.home + "-" + p.away + "</span></div>";
+      }).join("");
+      return '<div class="card" style="margin-top:12px">' +
+        '<div class="scoreboard-header"><span class="gw">GW ' + esc(pgw.gw_number) + '</span></div>' +
+        '<div class="scoreline">' +
+        '<span class="team home">' + esc(pgw.home) + '</span>' +
+        '<span class="score-sep">vs</span>' +
+        '<span class="team away">' + esc(pgw.away) + '</span>' +
+        '</div>' +
+        '<div style="padding:0 16px 8px">' + preds + '</div>' +
+        '</div>';
+    }).join("");
+    return '<div class="status-line" style="margin-top:16px">Waiting on full time:</div>' +
+      cards +
+      '<div class="submit-row"><button class="btn btn-ghost" id="checkResultBtn">Check results now</button></div>';
   }
 
   function submitPrediction() {

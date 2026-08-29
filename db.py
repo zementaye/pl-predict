@@ -49,32 +49,40 @@ CREATE TABLE IF NOT EXISTS settings (
 # The two-players-one-fixture rule was only enforced in Python as a
 # check-then-insert, which isn't atomic: if both players locked in a fixture
 # at the same moment (e.g. one via the bot, one via the web app), both checks
-# could pass before either write landed, leaving two "active" gameweeks for
-# the same chat. get_active_gameweek only ever returns the newest one, so the
-# first player's match — and their prediction on it — silently fell off,
-# while the other player ended up predicting a completely different match.
-#
-# Before adding a unique index to enforce this at the DB level, clean up any
-# such duplicates a past race may have already left behind: for each chat,
-# keep only the newest "active" gameweek and mark any older still-"active"
-# ones abandoned, so the index below doesn't fail to create on a DB that
-# already has the bug's leftovers.
+# could pass before either write landed, leaving two "awaiting_predictions"
+# gameweeks for the same chat. get_active_gameweek only ever returned the
+# newest one, so the first player's match — and their prediction on it —
+# silently fell off, while the other player ended up predicting a completely
+# different match.
 MIGRATIONS = """
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS wildcard BOOLEAN NOT NULL DEFAULT FALSE;
 
 ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS abandoned_reason TEXT;
 
+-- One-time cleanup for the race-condition bug above: collapse any chat that
+-- ended up with more than one still-"awaiting_predictions" gameweek down to
+-- just its newest one. A chat having one "awaiting_predictions" gameweek
+-- alongside one or more "predicted" (awaiting full time) ones, all at once,
+-- is fine and expected — see the index below — so this only ever touches
+-- "awaiting_predictions" duplicates, never "predicted" ones.
 UPDATE gameweeks SET status = 'abandoned', abandoned_reason = 'superseded by a later gameweek for the same chat (pre-fix race condition)'
-WHERE status IN ('awaiting_predictions', 'predicted')
+WHERE status = 'awaiting_predictions'
 AND id NOT IN (
     SELECT DISTINCT ON (chat_id) id FROM gameweeks
-    WHERE status IN ('awaiting_predictions', 'predicted')
+    WHERE status = 'awaiting_predictions'
     ORDER BY chat_id, id DESC
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS gameweeks_one_active_per_chat
+-- Two players share one fixture while it's still awaiting a prediction, but
+-- once both have predicted, that fixture just waits quietly for full time —
+-- it no longer needs to block starting the next one. So only
+-- "awaiting_predictions" is limited to one per chat; a chat can have several
+-- "predicted" (awaiting result) gameweeks in flight at once. This replaces
+-- an earlier, wider index that also counted "predicted" as blocking.
+DROP INDEX IF EXISTS gameweeks_one_active_per_chat;
+CREATE UNIQUE INDEX IF NOT EXISTS gameweeks_one_awaiting_predictions_per_chat
 ON gameweeks (chat_id)
-WHERE status IN ('awaiting_predictions', 'predicted');
+WHERE status = 'awaiting_predictions';
 """
 
 
@@ -144,14 +152,33 @@ def get_used_match_ids():
 
 
 def get_active_gameweek(chat_id):
+    """The one gameweek this chat can currently predict on — i.e. still
+    "awaiting_predictions". Once both players have predicted it moves to
+    "predicted" and stops being "active": it no longer blocks a new
+    /newgameweek, and just waits quietly (see get_pending_results) for full
+    time. Use get_pending_results for anything still waiting on a result."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM gameweeks WHERE chat_id=%s AND status IN ('awaiting_predictions','predicted') "
+                "SELECT * FROM gameweeks WHERE chat_id=%s AND status='awaiting_predictions' "
                 "ORDER BY id DESC LIMIT 1",
                 (chat_id,),
             )
             return cur.fetchone()
+
+
+def get_pending_results(chat_id):
+    """Every gameweek for this chat that's fully predicted but not yet
+    scored — i.e. waiting on full time. There can be several at once now
+    that starting a new gameweek doesn't have to wait for the previous
+    match to finish."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM gameweeks WHERE chat_id=%s AND status='predicted' ORDER BY id",
+                (chat_id,),
+            )
+            return cur.fetchall()
 
 
 def create_gameweek(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
@@ -168,7 +195,7 @@ def create_gameweek(chat_id, gw_number, match_id, home, away, kickoff, starter_i
                 )
             except psycopg2.errors.UniqueViolation as e:
                 conn.rollback()
-                if e.diag.constraint_name == "gameweeks_one_active_per_chat":
+                if e.diag.constraint_name == "gameweeks_one_awaiting_predictions_per_chat":
                     return None
                 raise  # a different constraint (e.g. duplicate match_id) — a real bug, don't hide it
             return cur.fetchone()["id"]

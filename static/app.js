@@ -14,6 +14,7 @@
   var activeTab = "fixture";
   var state = null;          // last /api/state payload
   var draft = null;          // { gwId, home, away, wildcard } — the score being built
+  var editDraft = null;      // same shape, but for an already-submitted prediction being edited
   var newGwFixtures = null;  // fixtures list while picking a match
 
   function apiFetch(path, opts) {
@@ -70,6 +71,66 @@
     else renderHistory();
   }
 
+  // Renders one team-per-row score picker: team name on the left, that
+  // team's own [-][score][+] on the right, right next to it. Using
+  // `prefix` to namespace element ids/data lets the same markup serve both
+  // the "new prediction" draft and the "editing an existing one" draft.
+  function scoreEntryMarkup(homeName, awayName, home, away, prefix) {
+    return '<div class="score-entry">' +
+      '<div class="score-team-row">' +
+        '<span class="score-team-name">' + esc(homeName) + '</span>' +
+        '<div class="score-control">' +
+          '<button class="step-btn" data-adj="h-1" data-prefix="' + prefix + '">\u2212</button>' +
+          '<span class="score-box" id="' + prefix + 'HomeScore">' + home + '</span>' +
+          '<button class="step-btn" data-adj="h+1" data-prefix="' + prefix + '">+</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="score-team-row">' +
+        '<span class="score-team-name">' + esc(awayName) + '</span>' +
+        '<div class="score-control">' +
+          '<button class="step-btn" data-adj="a-1" data-prefix="' + prefix + '">\u2212</button>' +
+          '<span class="score-box" id="' + prefix + 'AwayScore">' + away + '</span>' +
+          '<button class="step-btn" data-adj="a+1" data-prefix="' + prefix + '">+</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function attachScoreEntryHandlers(prefix, draftObj) {
+    Array.prototype.forEach.call(content.querySelectorAll('[data-prefix="' + prefix + '"]'), function (btn) {
+      btn.addEventListener("click", function () {
+        var adj = btn.dataset.adj;
+        if (adj === "h-1") draftObj.home = Math.max(0, draftObj.home - 1);
+        if (adj === "h+1") draftObj.home = Math.min(state.max_score, draftObj.home + 1);
+        if (adj === "a-1") draftObj.away = Math.max(0, draftObj.away - 1);
+        if (adj === "a+1") draftObj.away = Math.min(state.max_score, draftObj.away + 1);
+        document.getElementById(prefix + "HomeScore").textContent = draftObj.home;
+        document.getElementById(prefix + "AwayScore").textContent = draftObj.away;
+      });
+    });
+  }
+
+  // What to show below the predictions once I've already predicted this
+  // gameweek: a way to ask for an edit, or the state of a pending/approved
+  // edit request (mine or the other player's).
+  function editControlsHtml(me, myPred, editReq) {
+    if (!me || !myPred) return "";
+    if (editReq) {
+      if (editReq.status === "pending") {
+        if (editReq.requester_id === me.telegram_id) {
+          return '<div class="edit-banner">Waiting on the other player to approve your edit request.</div>';
+        }
+        return '<div class="edit-banner">The other player wants to change their prediction.</div>' +
+          '<div class="edit-row"><button class="btn btn-ghost btn-small" id="approveEditBtn">Approve edit request</button></div>';
+      }
+      if (editReq.status === "approved" && editReq.requester_id !== me.telegram_id) {
+        return '<div class="edit-banner">Waiting on the other player to submit their new score.</div>';
+      }
+      return "";
+    }
+    return '<div class="edit-row"><button class="btn btn-ghost btn-small" id="requestEditBtn">Request to edit my prediction</button></div>';
+  }
+
   function renderFixture() {
     if (state.setup_needed) {
       content.innerHTML = '<div class="empty">No game set up yet.<br>Send <b>/start</b> to the bot in your group to get going.</div>';
@@ -77,25 +138,16 @@
     }
 
     var gw = state.active_gameweek;
-    if (state.players.length < 2) {
-      newGwFixtures = null;
-      content.innerHTML =
-        '<div class="empty">Game paused — an active predictor game needs 2 registered players.</div>' +
-        '<div class="status-line">Send <b>/start</b> to the bot to register the second player.</div>';
-      return;
-    }
     if (!gw) {
       newGwFixtures = null;
+      editDraft = null;
       content.innerHTML =
         '<div class="empty">No active fixture right now.</div>' +
         (state.players.length < 2
           ? '<div class="status-line">Need 2 registered players \u2014 send /start to the bot.</div>'
-          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>') +
-        renderPendingResultsHtml();
+          : '<button class="btn btn-primary" id="startGwBtn">Start a new gameweek</button>');
       var b = document.getElementById("startGwBtn");
       if (b) b.addEventListener("click", startNewGameweek);
-      var crb0 = document.getElementById("checkResultBtn");
-      if (crb0) crb0.addEventListener("click", checkResult);
       return;
     }
 
@@ -111,6 +163,23 @@
       waitingOn = p ? p.name : null;
     }
 
+    var myPred = me ? gw.predictions.find(function (pr) { return pr.telegram_id === me.telegram_id; }) : null;
+    var editReq = gw.edit_request;
+    var iAmApprovedEditor = !!(editReq && editReq.status === "approved" && me && editReq.requester_id === me.telegram_id);
+
+    if (iAmApprovedEditor) {
+      if (editDraft == null || editDraft.gwId !== gw.id) {
+        editDraft = {
+          gwId: gw.id,
+          home: myPred ? myPred.home : 0,
+          away: myPred ? myPred.away : 0,
+          wildcard: myPred ? myPred.wildcard : false,
+        };
+      }
+    } else {
+      editDraft = null;
+    }
+
     var predsHtml = gw.predictions.map(function (p) {
       return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
         '</span><span>' + p.home + "-" + p.away + "</span></div>";
@@ -121,21 +190,9 @@
     html += '<div class="scoreboard-header"><span class="gw">GW ' + esc(gw.gw_number) + '</span><span>' + esc(fmtKickoff(gw.kickoff)) + '</span></div>';
 
     if (myTurn) {
-      html +=
-        '<div class="scoreline">' +
-        '<span class="team home">' + esc(gw.home) + '</span>' +
-        '<span class="score-box" id="homeScore">' + draft.home + '</span>' +
-        '<span class="score-sep">\u2013</span>' +
-        '<span class="score-box" id="awayScore">' + draft.away + '</span>' +
-        '<span class="team away">' + esc(gw.away) + '</span>' +
-        '</div>' +
-        '<div class="stepper-row">' +
-        '<button class="step-btn" data-adj="h-1">\u2212</button>' +
-        '<button class="step-btn" data-adj="h+1">+</button>' +
-        '<span class="spacer"></span>' +
-        '<button class="step-btn" data-adj="a-1">\u2212</button>' +
-        '<button class="step-btn" data-adj="a+1">+</button>' +
-        '</div>';
+      html += scoreEntryMarkup(gw.home, gw.away, draft.home, draft.away, "new");
+    } else if (iAmApprovedEditor) {
+      html += scoreEntryMarkup(gw.home, gw.away, editDraft.home, editDraft.away, "edit");
     } else {
       html += '<div class="scoreline">' +
         '<span class="team home">' + esc(gw.home) + '</span>' +
@@ -150,28 +207,28 @@
       html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
         '<button class="toggle' + (draft.wildcard ? ' on' : '') + '" id="wcToggle"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" id="submitBtn">Submit prediction</button></div>';
+    } else if (iAmApprovedEditor) {
+      html += '<div class="perforation"></div>';
+      html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
+        '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" id="editWcToggle"></button></div>';
+      html += '<div class="submit-row"><button class="btn btn-primary" id="editSubmitBtn">Save new prediction</button></div>';
     } else if (waitingOn) {
       html += '<div class="turn-banner">Waiting on ' + esc(waitingOn) + '</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">No predictions yet.</div>') + '</div>';
+      html += editControlsHtml(me, myPred, editReq);
+    } else {
+      html += '<div class="turn-banner">Both predictions are in \u2014 waiting on full time.</div>';
+      html += '<div style="padding:0 16px 8px">' + predsHtml + '</div>';
+      html += editControlsHtml(me, myPred, editReq);
+      html += '<div class="submit-row"><button class="btn btn-ghost" id="checkResultBtn">Check result now</button></div>';
     }
 
     html += '</div>'; // .card
-    html += renderPendingResultsHtml();
 
     content.innerHTML = html;
 
     if (myTurn) {
-      Array.prototype.forEach.call(content.querySelectorAll("[data-adj]"), function (btn) {
-        btn.addEventListener("click", function () {
-          var adj = btn.dataset.adj;
-          if (adj === "h-1") draft.home = Math.max(0, draft.home - 1);
-          if (adj === "h+1") draft.home = Math.min(state.max_score, draft.home + 1);
-          if (adj === "a-1") draft.away = Math.max(0, draft.away - 1);
-          if (adj === "a+1") draft.away = Math.min(state.max_score, draft.away + 1);
-          document.getElementById("homeScore").textContent = draft.home;
-          document.getElementById("awayScore").textContent = draft.away;
-        });
-      });
+      attachScoreEntryHandlers("new", draft);
       var wc = document.getElementById("wcToggle");
       if (wc) wc.addEventListener("click", function () {
         draft.wildcard = !draft.wildcard;
@@ -179,32 +236,23 @@
       });
       var sb = document.getElementById("submitBtn");
       if (sb) sb.addEventListener("click", submitPrediction);
+    } else if (iAmApprovedEditor) {
+      attachScoreEntryHandlers("edit", editDraft);
+      var ewc = document.getElementById("editWcToggle");
+      if (ewc) ewc.addEventListener("click", function () {
+        editDraft.wildcard = !editDraft.wildcard;
+        ewc.classList.toggle("on", editDraft.wildcard);
+      });
+      var esb = document.getElementById("editSubmitBtn");
+      if (esb) esb.addEventListener("click", submitEdit);
     }
+
     var crb = document.getElementById("checkResultBtn");
     if (crb) crb.addEventListener("click", checkResult);
-  }
-
-  function renderPendingResultsHtml() {
-    var results = state.pending_results || [];
-    if (!results.length) return "";
-    var cards = results.map(function (pgw) {
-      var preds = pgw.predictions.map(function (p) {
-        return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
-          '</span><span>' + p.home + "-" + p.away + "</span></div>";
-      }).join("");
-      return '<div class="card" style="margin-top:12px">' +
-        '<div class="scoreboard-header"><span class="gw">GW ' + esc(pgw.gw_number) + '</span></div>' +
-        '<div class="scoreline">' +
-        '<span class="team home">' + esc(pgw.home) + '</span>' +
-        '<span class="score-sep">vs</span>' +
-        '<span class="team away">' + esc(pgw.away) + '</span>' +
-        '</div>' +
-        '<div style="padding:0 16px 8px">' + preds + '</div>' +
-        '</div>';
-    }).join("");
-    return '<div class="status-line" style="margin-top:16px">Waiting on full time:</div>' +
-      cards +
-      '<div class="submit-row"><button class="btn btn-ghost" id="checkResultBtn">Check results now</button></div>';
+    var reqBtn = document.getElementById("requestEditBtn");
+    if (reqBtn) reqBtn.addEventListener("click", requestEdit);
+    var appBtn = document.getElementById("approveEditBtn");
+    if (appBtn) appBtn.addEventListener("click", approveEdit);
   }
 
   function submitPrediction() {
@@ -216,6 +264,38 @@
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
       draft = null;
+      loadState();
+      if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
+    });
+  }
+
+  function requestEdit() {
+    var btn = document.getElementById("requestEditBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Requesting\u2026"; }
+    apiFetch("/api/requestedit", { method: "POST" }).then(function (res) {
+      if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
+      loadState();
+    });
+  }
+
+  function approveEdit() {
+    var btn = document.getElementById("approveEditBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Approving\u2026"; }
+    apiFetch("/api/approveedit", { method: "POST" }).then(function (res) {
+      if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
+      loadState();
+    });
+  }
+
+  function submitEdit() {
+    var sb = document.getElementById("editSubmitBtn");
+    if (sb) { sb.disabled = true; sb.textContent = "Saving\u2026"; }
+    apiFetch("/api/editpredict", {
+      method: "POST",
+      body: JSON.stringify({ home: editDraft.home, away: editDraft.away, wildcard: editDraft.wildcard }),
+    }).then(function (res) {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
+      editDraft = null;
       loadState();
       if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });

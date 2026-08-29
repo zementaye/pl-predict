@@ -41,19 +41,11 @@ def player_name(row, players):
 
 
 def allowed_predictor(gw, preds, players):
-    """Whose turn it is right now, or None if no valid turn exists."""
-    # A predictor game requires two registered players. An old active
-    # gameweek can still exist after someone is removed, so never let the
-    # missing opponent crash the web API with StopIteration.
-    if len(players) < 2:
-        return None
+    """Whose turn it is right now, or None if both predictions are already in."""
     if len(preds) == 0:
         return gw["starter_id"]
     if len(preds) == 1:
-        return next(
-            (p["telegram_id"] for p in players if p["telegram_id"] != gw["starter_id"]),
-            None,
-        )
+        return next(p["telegram_id"] for p in players if p["telegram_id"] != gw["starter_id"])
     return None
 
 
@@ -61,10 +53,7 @@ def determine_starter(players, last_gw, fallback_telegram_id):
     """Turn alternates every gameweek. First-ever gameweek: whoever kicks it off."""
     if last_gw is None:
         return fallback_telegram_id
-    return next(
-        (p["telegram_id"] for p in players if p["telegram_id"] != last_gw["starter_id"]),
-        fallback_telegram_id,
-    )
+    return next(p["telegram_id"] for p in players if p["telegram_id"] != last_gw["starter_id"])
 
 
 def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard):
@@ -92,14 +81,6 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
         pass
 
     preds = db.get_predictions(gw["id"])
-    if len(players) < 2:
-        return {
-            "ok": False,
-            "message": "Need 2 registered players before making predictions.",
-            "gw": gw,
-            "next_player": None,
-            "chat_announcement": None,
-        }
     allowed = allowed_predictor(gw, preds, players)
     if allowed is None:
         return {"ok": False, "message": "Both predictions are already in for this match.",
@@ -134,40 +115,100 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
         return {"ok": True, "message": text, "gw": gw, "next_player": None, "chat_announcement": text}
 
 
-def filter_pickable_fixtures(matches):
-    """Drop fixtures that can no longer be picked: kickoff already passed, or
-    already locked in as a gameweek before (match_id is globally unique on
-    the gameweeks table, so a used one can never be picked again). Without
-    this, an already-played match from the same PL matchday round keeps
-    showing up in the picker forever, since the football API lists every
-    match in the round regardless of whether it's already been played."""
-    used = db.get_used_match_ids()
-    now = datetime.now(timezone.utc)
-    pickable = []
-    for m in matches:
-        if m["id"] in used:
-            continue
-        try:
-            kickoff_dt = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
-            if kickoff_dt <= now:
-                continue
-        except (KeyError, ValueError):
-            pass
-        pickable.append(m)
-    return pickable
+def _kickoff_passed(gw):
+    try:
+        kickoff_dt = datetime.fromisoformat(gw["kickoff"].replace("Z", "+00:00"))
+        return datetime.now(timezone.utc) > kickoff_dt
+    except ValueError:
+        return False
+
+
+def request_edit(chat_id, telegram_id, display_name):
+    """A player asks to change a prediction they've already submitted. Takes
+    effect only once the other player approves it via approve_edit()."""
+    players = db.get_players()
+    if not any(p["telegram_id"] == telegram_id for p in players):
+        return {"ok": False, "message": "You're not registered. Send /start to the bot first.",
+                "chat_announcement": None}
+
+    gw = db.get_active_gameweek(chat_id)
+    if not gw:
+        return {"ok": False, "message": "No active fixture.", "chat_announcement": None}
+
+    if _kickoff_passed(gw):
+        return {"ok": False, "message": "Kickoff has already passed — predictions are locked.",
+                "chat_announcement": None}
+
+    preds = db.get_predictions(gw["id"])
+    if not any(p["telegram_id"] == telegram_id for p in preds):
+        return {"ok": False, "message": "You haven't predicted yet this gameweek — nothing to edit.",
+                "chat_announcement": None}
+
+    other = next((p for p in players if p["telegram_id"] != telegram_id), None)
+    db.create_edit_request(gw["id"], telegram_id)
+    other_name = other["name"] if other else "the other player"
+    msg = (f"{display_name} wants to change their prediction for {gw['home_team']} vs {gw['away_team']}. "
+           f"{other_name}, run /approveedit (or approve it in the app) to allow it.")
+    return {"ok": True, "message": "Edit request sent \u2014 waiting on the other player to approve it.",
+            "chat_announcement": msg}
+
+
+def approve_edit(chat_id, telegram_id, display_name):
+    """The other player agrees to let the requester submit a new score."""
+    players = db.get_players()
+    gw = db.get_active_gameweek(chat_id)
+    if not gw:
+        return {"ok": False, "message": "No active fixture.", "chat_announcement": None}
+
+    req = db.get_edit_request(gw["id"])
+    if not req or req["status"] != "pending":
+        return {"ok": False, "message": "No pending edit request right now.", "chat_announcement": None}
+    if req["requester_id"] == telegram_id:
+        return {"ok": False, "message": "You can't approve your own edit request \u2014 the other player needs to.",
+                "chat_announcement": None}
+
+    db.approve_edit_request(gw["id"])
+    requester_name = next((p["name"] for p in players if p["telegram_id"] == req["requester_id"]), "They")
+    msg = f"{display_name} approved it \u2014 {requester_name} can now submit a new score."
+    return {"ok": True, "message": "Approved.", "chat_announcement": msg}
+
+
+def edit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard):
+    """Overwrites the requester's existing prediction, but only once the
+    other player has approved the pending edit request."""
+    players = db.get_players()
+    gw = db.get_active_gameweek(chat_id)
+    if not gw:
+        return {"ok": False, "message": "No active fixture.", "gw": None, "chat_announcement": None}
+
+    req = db.get_edit_request(gw["id"])
+    if not req or req["status"] != "approved" or req["requester_id"] != telegram_id:
+        return {"ok": False, "message": "You don't have an approved edit request right now \u2014 run /requestedit first.",
+                "gw": gw, "chat_announcement": None}
+
+    if _kickoff_passed(gw):
+        return {"ok": False, "message": "Kickoff has already passed \u2014 predictions are locked.",
+                "gw": gw, "chat_announcement": None}
+
+    preds = db.get_predictions(gw["id"])
+    other_pred = next((p for p in preds if p["telegram_id"] != telegram_id), None)
+    if other_pred and other_pred["pred_home"] == pred_h and other_pred["pred_away"] == pred_a:
+        return {"ok": False, "message": f"{pred_h}-{pred_a} is already taken \u2014 pick a different score.",
+                "gw": gw, "chat_announcement": None}
+
+    db.update_prediction(gw["id"], telegram_id, pred_h, pred_a, wildcard)
+    db.clear_edit_request(gw["id"])
+
+    wc_tag = " \U0001f3b4" if wildcard else ""
+    msg = f"{display_name} changed their prediction for {gw['home_team']} vs {gw['away_team']} to {pred_h}-{pred_a}{wc_tag}."
+    return {"ok": True, "message": msg, "gw": gw, "chat_announcement": msg}
 
 
 def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
-    """Returns the newly-active gameweek, or None if someone else locked in a
-    (different) fixture for this chat in the same instant — the caller should
-    show a friendly "someone beat you to it" message rather than proceeding as
-    if their own fixture won."""
     gw_id = db.create_gameweek(
         chat_id=chat_id, gw_number=gw_number, match_id=match_id,
         home=home, away=away, kickoff=kickoff, starter_id=starter_id,
     )
-    if gw_id is None:
-        return None
     return db.get_active_gameweek(chat_id)
 
 

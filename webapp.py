@@ -107,6 +107,7 @@ def api_state():
         if gw:
             preds = db.get_predictions(gw["id"])
             allowed = game.allowed_predictor(gw, preds, players)
+            edit_req = db.get_edit_request(gw["id"])
             active_gw = {
                 "id": gw["id"],
                 "gw_number": gw["gw_number"],
@@ -125,6 +126,10 @@ def api_state():
                     }
                     for p in preds
                 ],
+                "edit_request": {
+                    "requester_id": edit_req["requester_id"],
+                    "status": edit_req["status"],
+                } if edit_req else None,
             }
 
     history_rows = db.full_history()
@@ -152,34 +157,11 @@ def api_state():
         })
     history.reverse()  # most recent gameweek first
 
-    pending_results = []
-    if chat_id:
-        for pgw in db.get_pending_results(chat_id):
-            preds = db.get_predictions(pgw["id"])
-            pending_results.append({
-                "id": pgw["id"],
-                "gw_number": pgw["gw_number"],
-                "home": pgw["home_team"],
-                "away": pgw["away_team"],
-                "kickoff": pgw["kickoff"],
-                "predictions": [
-                    {
-                        "telegram_id": p["telegram_id"],
-                        "name": game.player_name(p, players),
-                        "home": p["pred_home"],
-                        "away": p["pred_away"],
-                        "wildcard": p["wildcard"],
-                    }
-                    for p in preds
-                ],
-            })
-
     return jsonify({
         "me": me,
         "players": [{"telegram_id": p["telegram_id"], "name": p["name"]} for p in players],
         "leaderboard": [{"name": r["name"], "total": r["total"]} for r in db.leaderboard()],
         "active_gameweek": active_gw,
-        "pending_results": pending_results,
         "history": history,
         "max_score": game.MAX_SCORE,
         "setup_needed": chat_id is None,
@@ -211,6 +193,62 @@ def api_predict():
     return jsonify({"ok": result["ok"], "message": result["message"]})
 
 
+@app.route("/api/requestedit", methods=["POST"])
+def api_requestedit():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to do that."}), 401
+
+    chat_id = the_chat_id()
+    if not chat_id:
+        return jsonify({"ok": False, "message": "No game set up yet."}), 400
+
+    result = game.request_edit(chat_id, user["id"], user.get("first_name", "Player"))
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + "\n\n(via the app)")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
+
+
+@app.route("/api/approveedit", methods=["POST"])
+def api_approveedit():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to do that."}), 401
+
+    chat_id = the_chat_id()
+    if not chat_id:
+        return jsonify({"ok": False, "message": "No game set up yet."}), 400
+
+    result = game.approve_edit(chat_id, user["id"], user.get("first_name", "Player"))
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + "\n\n(via the app)")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
+
+
+@app.route("/api/editpredict", methods=["POST"])
+def api_editpredict():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to predict."}), 401
+
+    chat_id = the_chat_id()
+    if not chat_id:
+        return jsonify({"ok": False, "message": "No game set up yet."}), 400
+
+    body = request.get_json(silent=True) or {}
+    try:
+        h = game.clamp(int(body["home"]))
+        a = game.clamp(int(body["away"]))
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Invalid score."}), 400
+    wildcard = bool(body.get("wildcard"))
+
+    result = game.edit_prediction(chat_id, user["id"], user.get("first_name", "Player"), h, a, wildcard)
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + "\n\n(via the app)")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
+
+
 @app.route("/api/newgameweek")
 def api_newgameweek_fixtures():
     """Lists fixtures for a matchday so the app can offer them to tap — mirrors
@@ -232,7 +270,7 @@ def api_newgameweek_fixtures():
             "away_crest": m["awayTeam"].get("crest"),
             "kickoff": m["utcDate"],
         }
-        for m in game.filter_pickable_fixtures(matches)
+        for m in matches
     ]
     return jsonify({"ok": True, "matchday": matchday, "fixtures": fixtures})
 
@@ -269,11 +307,6 @@ def api_lockmatch():
         kickoff=body["kickoff"],
         starter_id=starter_id,
     )
-    if gw is None:
-        return jsonify({
-            "ok": False,
-            "message": "Someone already locked in a different fixture just now. Pull to refresh and predict on that one instead.",
-        }), 409
     starter_name = next(p["name"] for p in players if p["telegram_id"] == starter_id)
     notify_chat(
         f"New gameweek locked in via the app: {gw['home_team']} vs {gw['away_team']}. "
@@ -288,24 +321,21 @@ def api_results():
     if not chat_id:
         return jsonify({"ok": False, "message": "No game set up yet."}), 400
 
-    pending_results = db.get_pending_results(chat_id)
-    if not pending_results:
+    gw = db.get_active_gameweek(chat_id)
+    if not gw or gw["status"] != "predicted":
         return jsonify({"ok": False, "message": "No fixture is fully predicted and awaiting a result right now."})
 
-    texts = []
-    for gw in pending_results:
-        try:
-            text = game.check_and_score_gameweek(gw)
-        except Exception as e:
-            log.exception("Failed to fetch match result")
-            return jsonify({"ok": False, "message": f"Couldn't check the result: {e}"}), 502
-        if text is not None:
-            texts.append(text)
-            notify_chat(text)
+    try:
+        text = game.check_and_score_gameweek(gw)
+    except Exception as e:
+        log.exception("Failed to fetch match result")
+        return jsonify({"ok": False, "message": f"Couldn't check the result: {e}"}), 502
 
-    if not texts:
+    if text is None:
         return jsonify({"ok": False, "message": "Match hasn't finished yet."})
-    return jsonify({"ok": True, "message": "\n\n".join(texts)})
+
+    notify_chat(text)
+    return jsonify({"ok": True, "message": text})
 
 
 if __name__ == "__main__":

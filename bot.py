@@ -107,8 +107,6 @@ async def lock_in_match(chat_id, idx, context, fixtures):
         starter_id=context.chat_data["starter_id"],
     )
     context.chat_data.pop("fixtures", None)
-    if gw is None:
-        return None, "Someone already locked in a different fixture just now. Run /pending to see what's active."
     return gw, None
 
 
@@ -213,6 +211,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/newgameweek [matchday] - fetch PL fixtures, tap one to pick it",
         "/setmatch <number> - pick which fixture you're competing on",
         "/predict - open the score keypad (or type /predict 2-1 [wildcard])",
+        "/requestedit - ask to change your already-submitted prediction",
+        "/approveedit - approve the other player's edit request",
         "/pending - see whose turn it is / current fixture",
         "/results - manually check if the current match has finished and score it",
         "/table - see the points standings",
@@ -259,12 +259,8 @@ async def newgameweek(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Couldn't fetch fixtures: {e}")
         return
 
-    matches = game.filter_pickable_fixtures(matches)
     if not matches:
-        await update.message.reply_text(
-            "No pickable fixtures left in that matchday (already played or already used). "
-            "Try /newgameweek <next matchday number>."
-        )
+        await update.message.reply_text("No fixtures found for that matchday.")
         return
 
     last_gw = db.get_last_gameweek(chat_id)
@@ -342,9 +338,23 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No active fixture. Run /newgameweek then pick a match first.")
         return
 
+    preds = db.get_predictions(gw["id"])
+    edit_req = db.get_edit_request(gw["id"])
+    editing = bool(edit_req and edit_req["status"] == "approved" and edit_req["requester_id"] == user.id)
+
     if not context.args:
         # No score typed — open the interactive keypad instead.
-        preds = db.get_predictions(gw["id"])
+        if editing:
+            mine = next((p for p in preds if p["telegram_id"] == user.id), None)
+            start_h = mine["pred_home"] if mine else 0
+            start_a = mine["pred_away"] if mine else 0
+            start_wc = mine["wildcard"] if mine else False
+            await update.message.reply_text(
+                f"{user.first_name}, editing your prediction for {gw['home_team']} vs {gw['away_team']}:",
+                reply_markup=build_score_keyboard(gw["home_team"], gw["away_team"], start_h, start_a, start_wc),
+            )
+            return
+
         allowed = allowed_predictor(gw, preds, players)
         if allowed is None:
             await update.message.reply_text("Both predictions are already in for this match.")
@@ -361,6 +371,11 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Couldn't parse that. Use a format like /predict 2-1 or /predict 2-1 wildcard")
         return
     pred_h, pred_a, wildcard = int(m.group(1)), int(m.group(2)), bool(m.group(3))
+
+    if editing:
+        result = game.edit_prediction(chat_id, user.id, user.first_name, pred_h, pred_a, wildcard)
+        await update.message.reply_text(result["message"])
+        return
 
     ok, msg, gw, players, next_player = await submit_prediction(chat_id, user, pred_h, pred_a, wildcard, context)
     await update.message.reply_text(msg)
@@ -381,14 +396,17 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
     players = db.get_players()
     preds = db.get_predictions(gw["id"])
     allowed = allowed_predictor(gw, preds, players)
+    edit_req = db.get_edit_request(gw["id"])
+    editing = bool(edit_req and edit_req["status"] == "approved" and edit_req["requester_id"] == user.id)
 
-    if allowed is None:
-        await query.answer("Both predictions are already in for this match.", show_alert=True)
-        return
-    if user.id != allowed:
-        allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
-        await query.answer(f"Not your turn — waiting on {allowed_name}.", show_alert=True)
-        return
+    if not editing:
+        if allowed is None:
+            await query.answer("Both predictions are already in for this match.", show_alert=True)
+            return
+        if user.id != allowed:
+            allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
+            await query.answer(f"Not your turn — waiting on {allowed_name}.", show_alert=True)
+            return
 
     h, a, wildcard = parse_score_keyboard(query.message.reply_markup)
     home_name, away_name = gw["home_team"], gw["away_team"]
@@ -412,6 +430,10 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         wildcard = not wildcard
     elif action == "submit":
         await query.answer()
+        if editing:
+            result = game.edit_prediction(chat_id, user.id, user.first_name, h, a, wildcard)
+            await query.edit_message_text(result["message"])
+            return
         ok, msg, gw, players, next_player = await submit_prediction(chat_id, user, h, a, wildcard, context)
         if ok:
             await query.edit_message_text(msg)
@@ -425,33 +447,42 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_reply_markup(reply_markup=build_score_keyboard(home_name, away_name, h, a, wildcard))
 
 
+async def requestedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    result = game.request_edit(chat_id, user.id, user.first_name)
+    await update.message.reply_text(result["message"])
+    if result["ok"] and result.get("chat_announcement"):
+        await update.message.reply_text(result["chat_announcement"])
+
+
+async def approveedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    result = game.approve_edit(chat_id, user.id, user.first_name)
+    await update.message.reply_text(result["message"])
+    if result["ok"] and result.get("chat_announcement"):
+        await update.message.reply_text(result["chat_announcement"])
+
+
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     gw = db.get_active_gameweek(chat_id)
-    pending_results = db.get_pending_results(chat_id)
-
-    if not gw and not pending_results:
+    if not gw:
         await update.message.reply_text("No active fixture right now. Run /newgameweek to start one.")
         return
-
     players = db.get_players()
-    lines = []
-    if gw:
-        preds = db.get_predictions(gw["id"])
-        lines.append(f"Current fixture: {gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})")
-        if len(preds) == 0:
-            starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
-            lines.append(f"Waiting on {starter_name} to predict first.")
-        elif len(preds) == 1:
-            other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
-            lines.append(f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}.")
-    if pending_results:
-        if lines:
-            lines.append("")
-        lines.append("Waiting on full time for:")
-        for pgw in pending_results:
-            lines.append(f"- {pgw['home_team']} vs {pgw['away_team']} (GW{pgw['gw_number']})")
-    await update.message.reply_text("\n".join(lines))
+    preds = db.get_predictions(gw["id"])
+    msg = f"Current fixture: {gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})\n"
+    if len(preds) == 0:
+        starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
+        msg += f"Waiting on {starter_name} to predict first."
+    elif len(preds) == 1:
+        other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
+        msg += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}."
+    else:
+        msg += "Both predictions are in, waiting on full time."
+    await update.message.reply_text(msg)
 
 
 async def check_and_score_gameweek(gw, bot):
@@ -474,16 +505,12 @@ async def check_and_score_gameweek(gw, bot):
 
 async def results_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    pending_results = db.get_pending_results(chat_id)
-    if not pending_results:
+    gw = db.get_active_gameweek(chat_id)
+    if not gw or gw["status"] != "predicted":
         await update.message.reply_text("No fixture is fully predicted and awaiting a result right now.")
         return
-    any_finished = False
-    for gw in pending_results:
-        text = await check_and_score_gameweek(gw, context.bot)
-        if text is not None:
-            any_finished = True
-    if not any_finished:
+    text = await check_and_score_gameweek(gw, context.bot)
+    if text is None:
         await update.message.reply_text("Match hasn't finished yet — I'll keep checking automatically.")
 
 
@@ -531,6 +558,8 @@ async def post_init(app):
         BotCommand("newgameweek", "Fetch PL fixtures, tap one to pick it"),
         BotCommand("setmatch", "Pick which fixture you're competing on"),
         BotCommand("predict", "Open the score keypad"),
+        BotCommand("requestedit", "Ask to change your submitted prediction"),
+        BotCommand("approveedit", "Approve the other player's edit request"),
         BotCommand("pending", "See whose turn it is / current fixture"),
         BotCommand("results", "Check if the current match has finished"),
         BotCommand("table", "See the points standings"),
@@ -570,6 +599,8 @@ def main():
     app.add_handler(CommandHandler("newgameweek", newgameweek))
     app.add_handler(CommandHandler("setmatch", setmatch))
     app.add_handler(CommandHandler("predict", predict))
+    app.add_handler(CommandHandler("requestedit", requestedit_cmd))
+    app.add_handler(CommandHandler("approveedit", approveedit_cmd))
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("results", results_cmd))
     app.add_handler(CommandHandler("table", table_cmd))

@@ -239,17 +239,6 @@ def get_setting(key):
             return row["value"] if row else None
 
 
-def reset_all_data():
-    """Wipes every table back to a blank slate: players, gameweeks,
-    predictions, and settings (including the chat_id anchor set by /start).
-    Irreversible — callers must confirm with the user first. RESTART IDENTITY
-    resets the gameweeks/predictions id sequences too, so a fresh game starts
-    counting from 1 again."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE predictions, gameweeks, players, settings RESTART IDENTITY")
-
-
 def full_history():
     with get_conn() as conn:
         with conn.cursor() as cur:

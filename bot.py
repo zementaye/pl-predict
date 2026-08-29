@@ -217,7 +217,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/results - manually check if the current match has finished and score it",
         "/table - see the points standings",
         "/history - see past results and predictions",
-        "/resetgame - wipe all data and start completely fresh (asks to confirm)",
         "",
         "🃏 Wildcard: toggle it on your prediction to double whatever points you earn. "
         "Renews every gameweek, no limit, each player chooses independently.",
@@ -503,47 +502,6 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def resetgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Wipes all game data - players, gameweeks, predictions, settings - back
-    to a blank slate. Destructive, so it always asks for confirmation first
-    rather than acting immediately. Restricted to registered players (if any
-    are registered) so a random group member can't wipe the season."""
-    requester = update.effective_user
-    players = db.get_players()
-
-    if players and not any(p["telegram_id"] == requester.id for p in players):
-        await update.message.reply_text("Only a registered predictor can reset the game.")
-        return
-
-    await update.message.reply_text(
-        "⚠️ This deletes *everyone's* registration, fixtures, and prediction history, "
-        "and starts the game completely from scratch. This can't be undone.\n\nAre you sure?",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Yes, clear everything", callback_data="resetgame:confirm"),
-            InlineKeyboardButton("❌ Cancel", callback_data="resetgame:cancel"),
-        ]]),
-    )
-
-
-async def on_resetgame_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    action = query.data.split(":")[1]
-
-    if action == "cancel":
-        await query.answer()
-        await query.edit_message_text("Cancelled — nothing was deleted.")
-        return
-
-    await query.answer()
-    db.reset_all_data()
-    context.chat_data.clear()  # drops any in-progress fixture list for this chat too
-    await query.edit_message_text(
-        "🧹 Done — all players, fixtures, and prediction history have been cleared.\n"
-        "Send /start to register and begin again."
-    )
-
-
 async def post_init(app):
     # Registers the command list Telegram shows in the "/" autocomplete
     # menu (the popup you get when typing "/" in the chat box). This is
@@ -560,7 +518,6 @@ async def post_init(app):
         BotCommand("results", "Check if the current match has finished"),
         BotCommand("table", "See the points standings"),
         BotCommand("history", "See past results and predictions"),
-        BotCommand("resetgame", "Wipe all data and start fresh (asks to confirm)"),
         BotCommand("help", "Show all commands"),
     ]
     if WEBAPP_URL:
@@ -600,10 +557,8 @@ def main():
     app.add_handler(CommandHandler("results", results_cmd))
     app.add_handler(CommandHandler("table", table_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
-    app.add_handler(CommandHandler("resetgame", resetgame))
     app.add_handler(CallbackQueryHandler(on_setmatch_callback, pattern=r"^setmatch:"))
     app.add_handler(CallbackQueryHandler(on_prediction_callback, pattern=r"^pred:"))
-    app.add_handler(CallbackQueryHandler(on_resetgame_callback, pattern=r"^resetgame:"))
 
     app.job_queue.run_repeating(auto_check_job, interval=1800, first=30)
 

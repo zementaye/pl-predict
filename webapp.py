@@ -209,7 +209,7 @@ def api_newgameweek_fixtures():
             "away_crest": m["awayTeam"].get("crest"),
             "kickoff": m["utcDate"],
         }
-        for m in matches
+        for m in game.filter_pickable_fixtures(matches)
     ]
     return jsonify({"ok": True, "matchday": matchday, "fixtures": fixtures})
 

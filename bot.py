@@ -259,8 +259,12 @@ async def newgameweek(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Couldn't fetch fixtures: {e}")
         return
 
+    matches = game.filter_pickable_fixtures(matches)
     if not matches:
-        await update.message.reply_text("No fixtures found for that matchday.")
+        await update.message.reply_text(
+            "No pickable fixtures left in that matchday (already played or already used). "
+            "Try /newgameweek <next matchday number>."
+        )
         return
 
     last_gw = db.get_last_gameweek(chat_id)

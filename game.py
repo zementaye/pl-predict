@@ -134,6 +134,29 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
         return {"ok": True, "message": text, "gw": gw, "next_player": None, "chat_announcement": text}
 
 
+def filter_pickable_fixtures(matches):
+    """Drop fixtures that can no longer be picked: kickoff already passed, or
+    already locked in as a gameweek before (match_id is globally unique on
+    the gameweeks table, so a used one can never be picked again). Without
+    this, an already-played match from the same PL matchday round keeps
+    showing up in the picker forever, since the football API lists every
+    match in the round regardless of whether it's already been played."""
+    used = db.get_used_match_ids()
+    now = datetime.now(timezone.utc)
+    pickable = []
+    for m in matches:
+        if m["id"] in used:
+            continue
+        try:
+            kickoff_dt = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+            if kickoff_dt <= now:
+                continue
+        except (KeyError, ValueError):
+            pass
+        pickable.append(m)
+    return pickable
+
+
 def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
     """Returns the newly-active gameweek, or None if someone else locked in a
     (different) fixture for this chat in the same instant — the caller should

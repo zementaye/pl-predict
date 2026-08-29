@@ -132,6 +132,17 @@ def get_last_gameweek(chat_id):
             return cur.fetchone()
 
 
+def get_used_match_ids():
+    """Every match_id that has ever been locked in as a gameweek, across all
+    chats and any status (match_id is globally UNIQUE on the gameweeks table,
+    so a used one can never be picked again). Used to filter the fixture
+    picker so an already-played/already-used match doesn't keep reappearing."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT match_id FROM gameweeks")
+            return {row["match_id"] for row in cur.fetchall()}
+
+
 def get_active_gameweek(chat_id):
     with get_conn() as conn:
         with conn.cursor() as cur:

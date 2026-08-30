@@ -302,21 +302,46 @@ def api_lockmatch():
 
     last_gw = db.get_last_gameweek(chat_id)
     starter_id = game.determine_starter(players, last_gw, user["id"])
-    gw = game.lock_in_match(
-        chat_id=chat_id,
-        gw_number=body["matchday"],
-        match_id=body["match_id"],
-        home=body["home"],
-        away=body["away"],
-        kickoff=body["kickoff"],
-        starter_id=starter_id,
-    )
+    try:
+        gw = game.lock_in_match(
+            chat_id=chat_id,
+            gw_number=body["matchday"],
+            match_id=body["match_id"],
+            home=body["home"],
+            away=body["away"],
+            kickoff=body["kickoff"],
+            starter_id=starter_id,
+        )
+    except Exception as e:
+        log.exception("Failed to lock in fixture")
+        return jsonify({"ok": False, "message": f"Couldn't lock that fixture in: {e}"}), 502
     starter_name = next(p["name"] for p in players if p["telegram_id"] == starter_id)
     notify_chat(
         f"New gameweek locked in via the app: {gw['home_team']} vs {gw['away_team']}. "
         f"{starter_name} predicts first."
     )
     return jsonify({"ok": True, "message": "Locked in."})
+
+
+@app.route("/api/resolvemissed", methods=["POST"])
+def api_resolvemissed():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to do that."}), 401
+
+    chat_id = the_chat_id()
+    if not chat_id:
+        return jsonify({"ok": False, "message": "No game set up yet."}), 400
+
+    body = request.get_json(silent=True) or {}
+    gw_id = body.get("gw_id")
+    if gw_id is None:
+        return jsonify({"ok": False, "message": "No fixture specified."}), 400
+
+    result = game.resolve_missed_gameweek(chat_id, gw_id)
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + "\n\n(via the app)")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
 
 
 @app.route("/api/results", methods=["POST"])

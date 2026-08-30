@@ -23,7 +23,14 @@
     if (tg && tg.initData) headers["X-Telegram-Init-Data"] = tg.initData;
     if (opts.body) headers["Content-Type"] = "application/json";
     return fetch(path, Object.assign({}, opts, { headers: headers }))
-      .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); });
+      .then(function (r) {
+        return r.json()
+          .catch(function () { return { ok: false, message: "Something went wrong on the server (" + r.status + "). Please try again." }; })
+          .then(function (j) { return { status: r.status, body: j }; });
+      })
+      .catch(function () {
+        return { status: 0, body: { ok: false, message: "Couldn\u2019t reach the server. Check your connection and try again." } };
+      });
   }
 
   function esc(s) {
@@ -200,6 +207,7 @@
     } else if (missed) {
       html += '<div class="turn-banner missed">\u23f1\ufe0f Kickoff has passed \u2014 this fixture can no longer be predicted.</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">Nobody predicted this one in time.</div>') + '</div>';
+      html += '<div class="submit-row"><button class="btn btn-ghost" data-action="resolve-missed" data-gw="' + gw.id + '">Score as missed (0 pts) &amp; close</button></div>';
     } else if (waitingOn) {
       html += '<div class="turn-banner">Waiting on ' + esc(waitingOn) + '</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">No predictions yet.</div>') + '</div>';
@@ -295,6 +303,8 @@
       approveEdit(gwId, btn);
     } else if (action === "check-result") {
       checkResult(gwId, btn);
+    } else if (action === "resolve-missed") {
+      resolveMissed(gwId, btn);
     }
   });
 
@@ -349,6 +359,16 @@
     apiFetch("/api/results", { method: "POST", body: JSON.stringify({ gw_id: gwId }) }).then(function () { loadState(); });
   }
 
+  function resolveMissed(gwId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Closing\u2026"; }
+    apiFetch("/api/resolvemissed", { method: "POST", body: JSON.stringify({ gw_id: gwId }) }).then(function (res) {
+      if (!res.body.ok) {
+        if (tg && tg.showAlert) tg.showAlert(res.body.message); else alert(res.body.message);
+      }
+      loadState();
+    });
+  }
+
   function startNewGameweek() {
     var btn = document.getElementById("startGwBtn") || document.getElementById("addFixtureBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Fetching fixtures\u2026"; }
@@ -397,8 +417,11 @@
         home: f.home, away: f.away, kickoff: f.kickoff,
       }),
     }).then(function (res) {
+      if (!res.body.ok) {
+        if (tg && tg.showAlert) tg.showAlert(res.body.message); else alert(res.body.message);
+        return;
+      }
       newGwFixtures = null;
-      if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
       loadState();
     });
   }

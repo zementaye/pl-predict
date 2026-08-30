@@ -288,6 +288,52 @@ def edit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard
     return {"ok": True, "message": msg, "gw": gw, "chat_announcement": msg}
 
 
+def resolve_missed_gameweek(chat_id, gw_id):
+    """Closes out a fixture that kicked off without full predictions: scores
+    0 for whoever didn't predict, so it stops sitting stuck forever. Doesn't
+    touch anyone who *did* predict in time — their prediction still scores
+    against the real result if it's available."""
+    gw = db.get_gameweek(gw_id)
+    if not gw or gw["chat_id"] != chat_id:
+        return {"ok": False, "message": "That fixture doesn't exist."}
+    if gw["status"] == "finished":
+        return {"ok": False, "message": "That fixture is already finished."}
+    if not _kickoff_passed(gw):
+        return {"ok": False, "message": "Kickoff hasn't passed yet for this fixture."}
+
+    players = db.get_players()
+    preds = db.get_predictions(gw["id"])
+    already_predicted = {p["telegram_id"] for p in preds}
+    for p in players:
+        if p["telegram_id"] not in already_predicted:
+            db.add_prediction(gw["id"], p["telegram_id"], 0, 0, False)
+
+    # Use the real result if it's available, so anyone who *did* predict in
+    # time still scores properly against it — only the missed side gets 0.
+    act_h = act_a = None
+    try:
+        match = api.get_match(gw["match_id"])
+        act_h = match["score"]["fullTime"]["home"]
+        act_a = match["score"]["fullTime"]["away"]
+    except Exception:
+        pass
+    if act_h is None or act_a is None:
+        act_h, act_a = 0, 0
+
+    for p in db.get_predictions(gw["id"]):
+        if p["telegram_id"] in already_predicted:
+            pts = calc_points(p["pred_home"], p["pred_away"], act_h, act_a)
+            if p["wildcard"]:
+                pts *= 2
+        else:
+            pts = 0
+        db.set_points(p["id"], pts)
+
+    db.finish_gameweek(gw["id"], act_h, act_a)
+    msg = f"Closed out {gw['home_team']} vs {gw['away_team']} \u2014 missed predictions scored 0."
+    return {"ok": True, "message": msg, "chat_announcement": msg}
+
+
 def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id):
     gw_id = db.create_gameweek(
         chat_id=chat_id, gw_number=gw_number, match_id=match_id,

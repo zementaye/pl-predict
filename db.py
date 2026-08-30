@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS edit_requests (
 # migrates existing deployments forward. Safe to run repeatedly.
 MIGRATIONS = """
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS wildcard BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Leftover from an earlier version that only allowed one "awaiting_predictions"
+-- gameweek per chat at a time. Multiple fixtures can now be open at once (see
+-- get_open_gameweeks), so this stale index was silently blocking every
+-- second fixture from being locked in with a "duplicate key value violates
+-- unique constraint" error.
+DROP INDEX IF EXISTS gameweeks_one_awaiting_predictions_per_chat;
+DROP INDEX IF EXISTS gameweeks_one_active_per_chat;
 """
 
 

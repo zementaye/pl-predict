@@ -39,6 +39,27 @@
     return d.innerHTML;
   }
 
+  // Small colored initials badge for a team or player name — picked from a
+  // fixed palette that matches the pitch/amber theme (not a full color
+  // hash) so avatars always feel like they belong on this screen.
+  var AVATAR_PALETTE = ["#E29A0E", "#3A8F6B", "#5B7FBF", "#B5654E", "#7C8FA6", "#A6753A"];
+  function avatarColor(name) {
+    var s = String(name || "");
+    var h = 0;
+    for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+  }
+  function avatarInitials(name) {
+    var parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return "?";
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  function avatarHtml(name, size) {
+    return '<span class="avatar' + (size === "sm" ? " avatar-sm" : "") + '" style="background:' +
+      avatarColor(name) + '">' + esc(avatarInitials(name)) + '</span>';
+  }
+
   function fmtKickoff(iso) {
     try {
       var d = new Date(iso);
@@ -172,14 +193,15 @@
     var editDraft = editDrafts[gw.id];
 
     var predsHtml = gw.predictions.map(function (p) {
-      return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
+      return '<div class="history-pred"><span>' + avatarHtml(p.name, "sm") + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
         '</span><span>' + p.home + "-" + p.away + "</span></div>";
     }).join("");
 
-    var html = '<div class="card' + (missed ? ' card-missed' : '') + '">';
+    var html = '<div class="card' + (missed ? ' card-missed' : '') + ((myTurn || iAmApprovedEditor) ? ' card-turn' : '') + '">';
     html += '<div class="scoreboard">';
     html += '<div class="scoreboard-header"><span class="gw">GW ' + esc(gw.gw_number) + '</span><span>' +
-      (missed ? '<span class="missed-tag">Missed</span> ' : '') + esc(fmtKickoff(gw.kickoff)) + '</span></div>';
+      (missed ? '<span class="missed-tag">Missed</span> ' : (myTurn || iAmApprovedEditor) ? '<span class="turn-tag">Your move</span> ' : '') +
+      esc(fmtKickoff(gw.kickoff)) + '</span></div>';
 
     if (myTurn) {
       html += scoreEntryMarkup(gw.home, gw.away, draft.home, draft.away, gw.id, "new");
@@ -187,21 +209,21 @@
       html += scoreEntryMarkup(gw.home, gw.away, editDraft.home, editDraft.away, gw.id, "edit");
     } else {
       html += '<div class="scoreline">' +
-        '<span class="team home">' + esc(gw.home) + '</span>' +
+        '<span class="team home">' + esc(gw.home) + avatarHtml(gw.home) + '</span>' +
         '<span class="score-sep">vs</span>' +
-        '<span class="team away">' + esc(gw.away) + '</span>' +
+        '<span class="team away">' + avatarHtml(gw.away) + esc(gw.away) + '</span>' +
         '</div>';
     }
     html += '</div>'; // .scoreboard
 
     if (myTurn) {
       html += '<div class="perforation"></div>';
-      html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
+      html += '<div class="wildcard-row"><div class="wildcard-label">\ud83c\udfb2 Wildcard<small>Doubles whatever points you earn</small></div>' +
         '<button class="toggle' + (draft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="new"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit" data-gw="' + gw.id + '">Submit prediction</button></div>';
     } else if (iAmApprovedEditor) {
       html += '<div class="perforation"></div>';
-      html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
+      html += '<div class="wildcard-row"><div class="wildcard-label">\ud83c\udfb2 Wildcard<small>Doubles whatever points you earn</small></div>' +
         '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="edit"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit-edit" data-gw="' + gw.id + '">Save new prediction</button></div>';
     } else if (missed) {
@@ -225,7 +247,7 @@
 
   function renderFixture() {
     if (state.setup_needed) {
-      content.innerHTML = '<div class="empty">No game set up yet.<br>Send <b>/start</b> to the bot in your group to get going.</div>';
+      content.innerHTML = '<div class="empty empty-setup">No game set up yet.<br>Send <b>/start</b> to the bot in your group to get going.</div>';
       return;
     }
 
@@ -258,7 +280,10 @@
     var sortedGws = gws.filter(function (g) { return !isMissed(g); })
       .concat(gws.filter(isMissed));
 
-    var html = sortedGws.map(fixtureCardHtml).join("");
+    var openCount = sortedGws.length;
+    var head = '<div class="section-head"><span class="label">This gameweek</span><span class="count">' +
+      openCount + (openCount === 1 ? ' fixture' : ' fixtures') + '</span></div>';
+    var html = head + sortedGws.map(fixtureCardHtml).join("");
     if (state.players.length >= 2) {
       html += '<div class="submit-row"><button class="btn btn-ghost" id="addFixtureBtn">+ Predict another fixture</button></div>';
     }
@@ -286,8 +311,14 @@
       if (adj === "a-1") draftObj.away = Math.max(0, draftObj.away - 1);
       if (adj === "a+1") draftObj.away = Math.min(state.max_score, draftObj.away + 1);
       var idBase = btn.dataset.which + gwId;
-      document.getElementById(idBase + "HomeScore").textContent = draftObj.home;
-      document.getElementById(idBase + "AwayScore").textContent = draftObj.away;
+      var homeEl = document.getElementById(idBase + "HomeScore");
+      var awayEl = document.getElementById(idBase + "AwayScore");
+      homeEl.textContent = draftObj.home;
+      awayEl.textContent = draftObj.away;
+      var changed = adj[0] === "h" ? homeEl : awayEl;
+      changed.classList.remove("pop");
+      void changed.offsetWidth; // restart the animation on repeated taps
+      changed.classList.add("pop");
     } else if (action === "toggle-wc") {
       var d = btn.dataset.which === "edit" ? editDrafts[gwId] : drafts[gwId];
       if (!d) return;
@@ -428,36 +459,45 @@
 
   function renderTable() {
     if (!state.leaderboard.length) {
-      content.innerHTML = '<div class="empty">No points on the board yet.</div>';
+      content.innerHTML = '<div class="section-head"><span class="label">League table</span></div>' +
+        '<div class="empty empty-trophy">No points on the board yet.</div>';
       return;
     }
+    var top = state.leaderboard[0].total || 1;
     var rows = state.leaderboard.map(function (r, i) {
-      return '<div class="standing-row' + (i === 0 && r.total > 0 ? " leader" : "") + '">' +
+      var rankClass = i < 3 ? " rank-" + (i + 1) : "";
+      var pct = Math.max(4, Math.round((r.total / top) * 100));
+      return '<div class="standing-row' + rankClass + '">' +
         '<span class="standing-rank">' + (i + 1) + '</span>' +
-        '<span class="standing-name">' + esc(r.name) + '</span>' +
+        avatarHtml(r.name) +
+        '<span class="standing-main"><span class="standing-name">' + esc(r.name) + '</span>' +
+        '<span class="standing-bar-track"><span class="standing-bar-fill" style="width:' + pct + '%"></span></span></span>' +
         '<span class="standing-pts">' + r.total + '<small>pts</small></span>' +
         '</div>';
     }).join("");
-    content.innerHTML = '<div class="card">' + rows + '</div>';
+    content.innerHTML = '<div class="section-head"><span class="label">League table</span></div>' +
+      '<div class="card">' + rows + '</div>';
   }
 
   function renderHistory() {
     if (!state.history.length) {
-      content.innerHTML = '<div class="empty">No finished gameweeks yet.</div>';
+      content.innerHTML = '<div class="section-head"><span class="label">Match log</span></div>' +
+        '<div class="empty empty-history">No finished gameweeks yet.</div>';
       return;
     }
     var rows = state.history.map(function (h) {
       var preds = h.predictions.map(function (p) {
-        return '<div class="history-pred"><span>' + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
+        return '<div class="history-pred"><span>' + avatarHtml(p.name, "sm") + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
           '</span><span>' + p.home + "-" + p.away + ' <span class="pts">+' + p.points + '</span></span></div>';
       }).join("");
       return '<div class="history-gw">' +
-        '<div class="gw-title">GW ' + esc(h.gw_number) + '</div>' +
+        '<div class="gw-title"><span>GW ' + esc(h.gw_number) + '</span><span class="ft-badge">FT</span></div>' +
         '<div class="gw-score">' + esc(h.home) + " " + h.actual_home + "\u2013" + h.actual_away + " " + esc(h.away) + '</div>' +
         preds +
         '</div>';
     }).join("");
-    content.innerHTML = '<div class="card">' + rows + '</div>';
+    content.innerHTML = '<div class="section-head"><span class="label">Match log</span><span class="count">' +
+      state.history.length + ' finished</span></div><div class="card">' + rows + '</div>';
   }
 
   loadState();

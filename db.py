@@ -287,10 +287,10 @@ def full_history():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT g.gw_number, g.home_team, g.away_team, g.actual_home, g.actual_away, "
+                "SELECT g.id AS gameweek_id, g.gw_number, g.home_team, g.away_team, g.actual_home, g.actual_away, "
                 "pl.name, p.pred_home, p.pred_away, p.points, p.wildcard "
                 "FROM gameweeks g JOIN predictions p ON p.gameweek_id=g.id "
                 "JOIN players pl ON pl.telegram_id=p.telegram_id "
-                "WHERE g.status='finished' ORDER BY g.gw_number, pl.name"
+                "WHERE g.status='finished' ORDER BY g.id, pl.name"
             )
             return cur.fetchall()

@@ -135,26 +135,26 @@ def api_state():
     history = []
     by_gw = {}
     for r in history_rows:
-        gwn = r["gw_number"]
-        if gwn not in by_gw:
+        gwid = r["gameweek_id"]  # group by the actual fixture, not just the matchday number —
+        if gwid not in by_gw:    # several fixtures can share the same gw_number now
             entry = {
-                "gw_number": gwn,
+                "gw_number": r["gw_number"],
                 "home": r["home_team"],
                 "away": r["away_team"],
                 "actual_home": r["actual_home"],
                 "actual_away": r["actual_away"],
                 "predictions": [],
             }
-            by_gw[gwn] = entry
+            by_gw[gwid] = entry
             history.append(entry)
-        by_gw[gwn]["predictions"].append({
+        by_gw[gwid]["predictions"].append({
             "name": r["name"],
             "home": r["pred_home"],
             "away": r["pred_away"],
             "wildcard": r["wildcard"],
             "points": r["points"],
         })
-    history.reverse()  # most recent gameweek first
+    history.reverse()  # most recently finished fixture first
 
     return jsonify({
         "me": me,

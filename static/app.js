@@ -142,6 +142,15 @@
     var editReq = gw.edit_request;
     var iAmApprovedEditor = !!(editReq && editReq.status === "approved" && me && editReq.requester_id === me.telegram_id);
 
+    // Once kickoff passes without both predictions in, this fixture is stuck
+    // — nobody can submit or edit anymore, no matter whose "turn" it
+    // technically was. Show that plainly instead of a stepper that just
+    // fails silently (or near-silently) when tapped.
+    var kickoffPassed = false;
+    try { kickoffPassed = new Date(gw.kickoff).getTime() <= Date.now(); } catch (e) {}
+    var missed = kickoffPassed && gw.status === "awaiting_predictions";
+    if (missed) { myTurn = false; iAmApprovedEditor = false; }
+
     if (iAmApprovedEditor) {
       if (editDrafts[gw.id] == null) {
         editDrafts[gw.id] = {
@@ -160,9 +169,10 @@
         '</span><span>' + p.home + "-" + p.away + "</span></div>";
     }).join("");
 
-    var html = '<div class="card">';
+    var html = '<div class="card' + (missed ? ' card-missed' : '') + '">';
     html += '<div class="scoreboard">';
-    html += '<div class="scoreboard-header"><span class="gw">GW ' + esc(gw.gw_number) + '</span><span>' + esc(fmtKickoff(gw.kickoff)) + '</span></div>';
+    html += '<div class="scoreboard-header"><span class="gw">GW ' + esc(gw.gw_number) + '</span><span>' +
+      (missed ? '<span class="missed-tag">Missed</span> ' : '') + esc(fmtKickoff(gw.kickoff)) + '</span></div>';
 
     if (myTurn) {
       html += scoreEntryMarkup(gw.home, gw.away, draft.home, draft.away, gw.id, "new");
@@ -187,6 +197,9 @@
       html += '<div class="wildcard-row"><div class="wildcard-label">Wildcard<small>Doubles whatever points you earn</small></div>' +
         '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="edit"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit-edit" data-gw="' + gw.id + '">Save new prediction</button></div>';
+    } else if (missed) {
+      html += '<div class="turn-banner missed">\u23f1\ufe0f Kickoff has passed \u2014 this fixture can no longer be predicted.</div>';
+      html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">Nobody predicted this one in time.</div>') + '</div>';
     } else if (waitingOn) {
       html += '<div class="turn-banner">Waiting on ' + esc(waitingOn) + '</div>';
       html += '<div style="padding:12px 16px 18px">' + (predsHtml || '<div class="status-line">No predictions yet.</div>') + '</div>';
@@ -226,7 +239,18 @@
       return;
     }
 
-    var html = gws.map(fixtureCardHtml).join("");
+    // Fixtures still worth acting on come first; ones whose kickoff passed
+    // without a full set of predictions sink to the bottom so they don't
+    // bury what's actually predictable right now.
+    function isMissed(gw) {
+      var passed = false;
+      try { passed = new Date(gw.kickoff).getTime() <= Date.now(); } catch (e) {}
+      return passed && gw.status === "awaiting_predictions";
+    }
+    var sortedGws = gws.filter(function (g) { return !isMissed(g); })
+      .concat(gws.filter(isMissed));
+
+    var html = sortedGws.map(fixtureCardHtml).join("");
     if (state.players.length >= 2) {
       html += '<div class="submit-row"><button class="btn btn-ghost" id="addFixtureBtn">+ Predict another fixture</button></div>';
     }

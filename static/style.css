@@ -68,7 +68,7 @@ body {
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
 }
 
-.topbar, .content, .tabbar { position: relative; z-index: 2; }
+.topbar, .content, .tabbar, .stats-strip { position: relative; z-index: 2; }
 
 /* ---------- top bar ---------- */
 
@@ -92,9 +92,54 @@ body {
   transform: translateX(-50%);
   pointer-events: none;
   background:
-    conic-gradient(from 250deg at 30% 0%, rgba(255, 182, 39, 0.16), transparent 26deg),
-    conic-gradient(from 290deg at 70% 0%, rgba(255, 182, 39, 0.16), transparent 26deg);
+    conic-gradient(from 250deg at 30% 0%, rgba(255, 182, 39, 0.22), transparent 30deg),
+    conic-gradient(from 290deg at 70% 0%, rgba(255, 182, 39, 0.22), transparent 30deg);
   filter: blur(2px);
+}
+
+.stats-strip {
+  display: flex;
+  align-items: stretch;
+  margin: 4px 16px 14px;
+  padding: 12px 4px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16, 25, 43, 0.7) 0%, rgba(10, 18, 32, 0.7) 100%);
+  border: 1px solid var(--line);
+  position: relative;
+  z-index: 2;
+}
+
+.stats-strip:empty { display: none; }
+
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stat-value {
+  font-family: "Teko", sans-serif;
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--amber);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.stat-sep {
+  width: 1px;
+  background: var(--line);
+  margin: 2px 0;
 }
 
 .brand {
@@ -133,11 +178,12 @@ body {
 .topbar h1 {
   font-family: "Teko", sans-serif;
   font-weight: 600;
-  font-size: 32px;
+  font-size: 36px;
   letter-spacing: 0.01em;
   line-height: 1;
   margin: 3px 0 0;
   color: var(--chalk);
+  text-shadow: 0 2px 14px rgba(255, 182, 39, 0.18);
 }
 
 .top-status {
@@ -253,7 +299,12 @@ body {
   margin-bottom: 16px;
   box-shadow: var(--shadow-card);
   animation: card-in 0.38s var(--ease) both;
+  position: relative;
+  border-left: 3px solid rgba(76, 217, 113, 0.35);
 }
+
+.card.card-turn { border-left-color: var(--amber); }
+.card.card-missed { border-left-color: var(--red); opacity: 0.62; }
 
 .card.card-turn {
   border-color: rgba(255, 182, 39, 0.45);

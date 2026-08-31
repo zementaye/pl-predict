@@ -79,26 +79,87 @@
       Object.keys(drafts).forEach(function (id) { if (!openIds[id]) delete drafts[id]; });
       Object.keys(editDrafts).forEach(function (id) { if (!openIds[id]) delete editDrafts[id]; });
       render();
+      renderStatsStrip();
     }).catch(function () {
       content.innerHTML = '<div class="error-banner">Couldn\u2019t reach the server. Pull down to retry, or reopen the app.</div>';
     });
   }
 
-  // ---------- tab switching ----------
+  var statsStrip = document.getElementById("statsStrip");
+
+  function animateCount(el, to) {
+    var from = 0;
+    var start = null;
+    var dur = 650;
+    function step(ts) {
+      if (start === null) start = ts;
+      var p = Math.min(1, (ts - start) / dur);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(from + (to - from) * eased);
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function renderStatsStrip() {
+    if (!statsStrip) return;
+    if (state.setup_needed || !state.players.length) { statsStrip.innerHTML = ""; return; }
+    var mine = state.me && state.leaderboard.find(function (r) { return r.name === state.me.name; });
+    var rank = mine ? state.leaderboard.indexOf(mine) + 1 : null;
+    var openCount = (state.active_gameweeks || []).length;
+    statsStrip.innerHTML =
+      '<div class="stat"><span class="stat-value">' + (rank ? "#" + rank : "\u2013") + '</span><span class="stat-label">Your rank</span></div>' +
+      '<div class="stat-sep"></div>' +
+      '<div class="stat"><span class="stat-value" id="statPoints">0</span><span class="stat-label">Your points</span></div>' +
+      '<div class="stat-sep"></div>' +
+      '<div class="stat"><span class="stat-value">' + state.players.length + '</span><span class="stat-label">Players</span></div>' +
+      '<div class="stat-sep"></div>' +
+      '<div class="stat"><span class="stat-value">' + openCount + '</span><span class="stat-label">Open</span></div>';
+    var ptsEl = document.getElementById("statPoints");
+    if (ptsEl) animateCount(ptsEl, mine ? mine.total : 0);
+  }
+
+  // ---------- tab switching (tap or swipe) ----------
+
+  var TAB_ORDER = ["fixture", "table", "history"];
+
+  function goToTab(tab) {
+    if (tab === activeTab) return;
+    activeTab = tab;
+    Array.prototype.forEach.call(tabbar.querySelectorAll(".tab"), function (t) {
+      t.classList.toggle("active", t.dataset.tab === tab);
+    });
+    content.classList.remove("content-enter");
+    void content.offsetWidth; // restart the transition on rapid switches
+    content.classList.add("content-enter");
+    render();
+  }
 
   tabbar.addEventListener("click", function (e) {
     var btn = e.target.closest(".tab");
     if (!btn) return;
-    if (btn.dataset.tab === activeTab) return;
-    activeTab = btn.dataset.tab;
-    Array.prototype.forEach.call(tabbar.querySelectorAll(".tab"), function (t) {
-      t.classList.toggle("active", t === btn);
-    });
-    content.classList.remove("content-enter");
-    void content.offsetWidth; // restart the transition on rapid tab taps
-    content.classList.add("content-enter");
-    render();
+    goToTab(btn.dataset.tab);
   });
+
+  (function setupSwipe() {
+    var startX = null, startY = null, tracking = false;
+    content.addEventListener("touchstart", function (e) {
+      if (e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      tracking = true;
+    }, { passive: true });
+    content.addEventListener("touchend", function (e) {
+      if (!tracking || startX === null) return;
+      tracking = false;
+      var dx = e.changedTouches[0].clientX - startX;
+      var dy = e.changedTouches[0].clientY - startY;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      var idx = TAB_ORDER.indexOf(activeTab);
+      if (dx < 0 && idx < TAB_ORDER.length - 1) goToTab(TAB_ORDER[idx + 1]);
+      else if (dx > 0 && idx > 0) goToTab(TAB_ORDER[idx - 1]);
+    }, { passive: true });
+  })();
 
   // ---------- render ----------
 
@@ -490,12 +551,20 @@
         '<span class="standing-rank">' + (i + 1) + '</span>' +
         avatarHtml(r.name) +
         '<span class="standing-main"><span class="standing-name">' + esc(r.name) + '</span>' +
-        '<span class="standing-bar-track"><span class="standing-bar-fill" style="width:' + pct + '%"></span></span></span>' +
-        '<span class="standing-pts">' + r.total + '<small>pts</small></span>' +
+        '<span class="standing-bar-track"><span class="standing-bar-fill" data-pct="' + pct + '" style="width:0%"></span></span></span>' +
+        '<span class="standing-pts"><span class="pts-count" data-target="' + r.total + '">0</span><small>pts</small></span>' +
         '</div>';
     }).join("");
     content.innerHTML = '<div class="section-head"><span class="label">League table</span></div>' +
       '<div class="card">' + rows + '</div>';
+    requestAnimationFrame(function () {
+      Array.prototype.forEach.call(content.querySelectorAll(".standing-bar-fill"), function (el) {
+        el.style.width = el.dataset.pct + "%";
+      });
+    });
+    Array.prototype.forEach.call(content.querySelectorAll(".pts-count"), function (el) {
+      animateCount(el, +el.dataset.target);
+    });
   }
 
   function renderHistory() {

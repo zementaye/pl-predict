@@ -78,6 +78,23 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.topbar::before {
+  content: "";
+  position: absolute;
+  top: -60px;
+  left: 50%;
+  width: 340px;
+  height: 200px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background:
+    conic-gradient(from 250deg at 30% 0%, rgba(255, 182, 39, 0.16), transparent 26deg),
+    conic-gradient(from 290deg at 70% 0%, rgba(255, 182, 39, 0.16), transparent 26deg);
+  filter: blur(2px);
 }
 
 .brand {
@@ -181,6 +198,13 @@ body {
   overflow-y: auto;
 }
 
+.content-enter { animation: content-in 0.24s var(--ease); }
+
+@keyframes content-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .loading, .empty {
   text-align: center;
   color: var(--muted);
@@ -234,6 +258,12 @@ body {
 .card.card-turn {
   border-color: rgba(255, 182, 39, 0.45);
   box-shadow: var(--shadow-card), 0 0 0 1px rgba(255, 182, 39, 0.12), 0 0 22px rgba(255, 182, 39, 0.14);
+  animation: card-in 0.38s var(--ease) both, card-breathe 3.2s ease-in-out 0.4s infinite;
+}
+
+@keyframes card-breathe {
+  0%, 100% { box-shadow: var(--shadow-card), 0 0 0 1px rgba(255, 182, 39, 0.12), 0 0 18px rgba(255, 182, 39, 0.10); }
+  50%      { box-shadow: var(--shadow-card), 0 0 0 1px rgba(255, 182, 39, 0.22), 0 0 28px rgba(255, 182, 39, 0.22); }
 }
 
 @keyframes card-in {
@@ -353,10 +383,15 @@ body {
   font-size: 18px;
   font-weight: 600;
   flex-shrink: 0;
-  transition: background 0.12s var(--ease), transform 0.1s var(--ease), border-color 0.12s var(--ease);
+  transition: background 0.12s var(--ease), transform 0.1s var(--ease), border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
 }
 
-.step-btn:active { background: #1a2740; transform: scale(0.92); border-color: var(--amber-deep); }
+.step-btn:active {
+  background: #1a2740;
+  transform: scale(0.92);
+  border-color: var(--amber-deep);
+  box-shadow: 0 0 0 5px rgba(255, 182, 39, 0.14);
+}
 
 /* Each team gets its own row: name on the left, that team's own +/- controls
    and score right next to each other on the right. Stacking home/away
@@ -556,7 +591,33 @@ body {
   background: linear-gradient(155deg, var(--amber) 0%, var(--amber-deep) 100%);
   color: #241600;
   box-shadow: 0 6px 18px var(--amber-glow);
+  position: relative;
+  overflow: hidden;
 }
+
+.btn-primary::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -60%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: btn-shine 2.8s ease-in-out infinite;
+}
+
+@keyframes btn-shine {
+  0%   { left: -60%; }
+  55%  { left: 130%; }
+  100% { left: 130%; }
+}
+
+.btn-primary.btn-success {
+  background: linear-gradient(155deg, #4CD971 0%, #2FAE55 100%);
+  color: #05230F;
+}
+
+.btn-primary.btn-success::after { display: none; }
 
 .btn-primary:active { background: var(--amber-deep); box-shadow: 0 3px 10px var(--amber-glow); }
 
@@ -599,10 +660,11 @@ body {
   text-align: left;
   font-size: 14px;
   font-family: "Inter", sans-serif;
-  transition: background 0.12s var(--ease);
+  transition: background 0.12s var(--ease), transform 0.12s var(--ease);
+  position: relative;
 }
 
-.fixture-row:active { background: rgba(255, 182, 39, 0.08); }
+.fixture-row:active { background: rgba(255, 182, 39, 0.08); transform: scale(0.99); }
 
 .fixture-row:first-child { border-top: none; }
 
@@ -614,6 +676,27 @@ body {
   margin-left: auto;
   font-size: 11px;
   color: var(--muted);
+}
+
+.fixture-row .row-chevron {
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.fixture-row .next-tag {
+  position: absolute;
+  top: -1px;
+  left: 12px;
+  background: var(--amber);
+  color: #241600;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 0 0 6px 6px;
 }
 
 /* ---------- table ---------- */

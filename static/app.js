@@ -89,10 +89,14 @@
   tabbar.addEventListener("click", function (e) {
     var btn = e.target.closest(".tab");
     if (!btn) return;
+    if (btn.dataset.tab === activeTab) return;
     activeTab = btn.dataset.tab;
     Array.prototype.forEach.call(tabbar.querySelectorAll(".tab"), function (t) {
       t.classList.toggle("active", t === btn);
     });
+    content.classList.remove("content-enter");
+    void content.offsetWidth; // restart the transition on rapid tab taps
+    content.classList.add("content-enter");
     render();
   });
 
@@ -349,7 +353,13 @@
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
       delete drafts[gwId];
-      loadState();
+      if (res.body.ok && btn) {
+        btn.textContent = "\u2713 Locked in";
+        btn.classList.add("btn-success");
+        setTimeout(loadState, 420);
+      } else {
+        loadState();
+      }
       if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
@@ -380,7 +390,13 @@
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
       delete editDrafts[gwId];
-      loadState();
+      if (res.body.ok && btn) {
+        btn.textContent = "\u2713 Saved";
+        btn.classList.add("btn-success");
+        setTimeout(loadState, 420);
+      } else {
+        loadState();
+      }
       if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
@@ -415,7 +431,7 @@
 
   function renderFixtureList() {
     if (!newGwFixtures || !newGwFixtures.fixtures.length) {
-      content.innerHTML = '<div class="empty">No more fixtures to add for that matchday.</div>' +
+      content.innerHTML = '<div class="empty empty-setup">No more fixtures to add for that matchday.</div>' +
         '<div class="submit-row"><button class="btn btn-ghost" id="cancelAddBtn">Back</button></div>';
       var cb0 = document.getElementById("cancelAddBtn");
       if (cb0) cb0.addEventListener("click", function () { newGwFixtures = null; render(); });
@@ -423,14 +439,17 @@
     }
     var rows = newGwFixtures.fixtures.map(function (f, i) {
       return '<button class="fixture-row" data-idx="' + i + '">' +
+        (i === 0 ? '<span class="next-tag">Next</span>' : "") +
         (f.home_crest ? '<img src="' + esc(f.home_crest) + '">' : "") +
         '<span>' + esc(f.home) + '</span><span class="vs">vs</span><span>' + esc(f.away) + '</span>' +
         (f.away_crest ? '<img src="' + esc(f.away_crest) + '">' : "") +
         '<span class="kickoff">' + esc(fmtKickoff(f.kickoff)) + '</span>' +
+        '<span class="row-chevron">\u203a</span>' +
         '</button>';
     }).join("");
     content.innerHTML =
-      '<div class="status-line">Matchday ' + esc(newGwFixtures.matchday) + ' \u2014 tap a fixture to lock it in</div>' +
+      '<div class="section-head"><span class="label">Matchday ' + esc(newGwFixtures.matchday) +
+      '</span><span class="count">tap to lock in</span></div>' +
       '<div class="card">' + rows + '</div>' +
       '<div class="submit-row"><button class="btn btn-ghost" id="cancelAddBtn">Cancel</button></div>';
     Array.prototype.forEach.call(content.querySelectorAll(".fixture-row"), function (btn) {

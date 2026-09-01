@@ -277,6 +277,37 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* ---------- skeleton loader ---------- */
+
+.skeleton-card {
+  background: linear-gradient(180deg, var(--panel-2) 0%, var(--panel) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px 18px;
+  margin-bottom: 16px;
+}
+
+.sk-line, .sk-pill {
+  background: linear-gradient(90deg, rgba(245, 241, 230, 0.06) 25%, rgba(245, 241, 230, 0.14) 37%, rgba(245, 241, 230, 0.06) 63%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.4s ease infinite;
+  border-radius: 6px;
+}
+
+.sk-line { height: 14px; margin-bottom: 10px; }
+.sk-w60 { width: 60%; }
+.sk-w50 { width: 50%; }
+.sk-w40 { width: 40%; }
+.sk-w30 { width: 30%; }
+
+.sk-row { display: flex; gap: 10px; margin-top: 8px; }
+.sk-pill { height: 34px; flex: 1; border-radius: 10px; }
+
+@keyframes sk-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: 0 0; }
+}
+
 .error-banner {
   background: rgba(225, 72, 60, 0.16);
   border: 1px solid rgba(225, 72, 60, 0.4);
@@ -511,8 +542,6 @@ body {
   font-size: 13px;
   line-height: 1.4;
 }
-
-.edit-banner::before { content: "\270D\FE0F  "; }
 
 .edit-row { padding: 0 16px 16px; }
 

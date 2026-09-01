@@ -81,7 +81,13 @@
       render();
       renderStatsStrip();
     }).catch(function () {
-      content.innerHTML = '<div class="error-banner">Couldn\u2019t reach the server. Pull down to retry, or reopen the app.</div>';
+      content.innerHTML = '<div class="error-banner">Couldn\u2019t reach the server.</div>' +
+        '<div class="submit-row"><button class="btn btn-ghost" id="retryBtn">Try again</button></div>';
+      var rb = document.getElementById("retryBtn");
+      if (rb) rb.addEventListener("click", function () {
+        content.innerHTML = '<div class="loading">Reconnecting\u2026</div>';
+        loadState();
+      });
     });
   }
 
@@ -205,13 +211,13 @@
     if (editReq) {
       if (editReq.status === "pending") {
         if (editReq.requester_id === me.telegram_id) {
-          return '<div class="edit-banner">Waiting on the other player to approve your edit request.</div>';
+          return '<div class="edit-banner">\u23f3 Waiting on the other player to approve your edit request.</div>';
         }
-        return '<div class="edit-banner">The other player wants to change their prediction.</div>' +
+        return '<div class="edit-banner">\u270f\ufe0f The other player wants to change their prediction.</div>' +
           '<div class="edit-row"><button class="btn btn-ghost btn-small" data-action="approve-edit" data-gw="' + gwId + '">Approve edit request</button></div>';
       }
       if (editReq.status === "approved" && editReq.requester_id !== me.telegram_id) {
-        return '<div class="edit-banner">Waiting on the other player to submit their new score.</div>';
+        return '<div class="edit-banner">\u23f3 Waiting on the other player to submit their new score.</div>';
       }
       return "";
     }

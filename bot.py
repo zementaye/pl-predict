@@ -196,6 +196,21 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Use /start to register yourself again — /remove is for removing the other predictor.")
         return
 
+    # Removing someone mid-turn used to leave that fixture stuck forever —
+    # every other command waiting on them would crash instead of erroring,
+    # since nothing else on the team could ever satisfy "waiting on
+    # <removed player>". Block it here instead, with a clear reason.
+    chat_id = update.effective_chat.id
+    stuck_gw = game.player_has_open_obligation(chat_id, target_id)
+    if stuck_gw:
+        await update.message.reply_text(
+            f"Can't remove {target_name or 'them'} right now \u2014 they still need to act on "
+            f"{stuck_gw['home_team']} vs {stuck_gw['away_team']} (GW{stuck_gw['gw_number']}). "
+            "Either wait for them to submit/edit their prediction, or wait for kickoff to pass and "
+            "close it out from the app (Score as missed) first."
+        )
+        return
+
     removed = db.remove_player(target_id)
     if not removed:
         await update.message.reply_text("That person isn't currently registered.")
@@ -350,7 +365,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             start_h = mine["pred_home"] if mine else 0
             start_a = mine["pred_away"] if mine else 0
             start_wc = mine["wildcard"] if mine else False
-            context.chat_data["predict_gw_id"] = gw["id"]
+            context.chat_data.setdefault("predict_gw_id_by_user", {})[user.id] = gw["id"]
             await update.message.reply_text(
                 f"{user.first_name}, editing your prediction for {gw['home_team']} vs {gw['away_team']}:",
                 reply_markup=build_score_keyboard(gw["home_team"], gw["away_team"], start_h, start_a, start_wc),
@@ -367,10 +382,13 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Both predictions are already in for this match.")
             return
         if user.id != allowed:
-            allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
+            allowed_name = next((p["name"] for p in players if p["telegram_id"] == allowed), None)
+            if allowed_name is None:
+                await update.message.reply_text("This fixture is waiting on a player who's no longer registered — close it out from the app (Score as missed) once kickoff has passed.")
+                return
             await update.message.reply_text(f"Not your turn — waiting on {allowed_name}.")
             return
-        context.chat_data["predict_gw_id"] = gw["id"]
+        context.chat_data.setdefault("predict_gw_id_by_user", {})[user.id] = gw["id"]
         await prompt_prediction(context.bot, chat_id, gw, user.id, players)
         return
 
@@ -397,7 +415,7 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     action = query.data.split(":")[1]
 
-    gw_id = context.chat_data.get("predict_gw_id")
+    gw_id = context.chat_data.get("predict_gw_id_by_user", {}).get(user.id)
     gw = db.get_gameweek(gw_id) if gw_id else None
     if not gw or gw["chat_id"] != chat_id or gw["status"] == "finished":
         await query.answer("No active fixture right now — run /predict again.", show_alert=True)
@@ -413,7 +431,10 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer("Both predictions are already in for this match.", show_alert=True)
             return
         if user.id != allowed:
-            allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
+            allowed_name = next((p["name"] for p in players if p["telegram_id"] == allowed), None)
+            if allowed_name is None:
+                await query.answer("Waiting on a player who's no longer registered — close this out from the app once kickoff has passed.", show_alert=True)
+                return
             await query.answer(f"Not your turn — waiting on {allowed_name}.", show_alert=True)
             return
 
@@ -425,7 +446,7 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
     if action == "cancel":
         await query.answer()
-        context.chat_data.pop("predict_gw_id", None)
+        context.chat_data.get("predict_gw_id_by_user", {}).pop(user.id, None)
         await query.edit_message_text("Prediction cancelled. Run /predict to try again when you're ready.")
         return
     if action == "h+":
@@ -440,7 +461,7 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         wildcard = not wildcard
     elif action == "submit":
         await query.answer()
-        context.chat_data.pop("predict_gw_id", None)
+        context.chat_data.get("predict_gw_id_by_user", {}).pop(user.id, None)
         if editing:
             result = game.edit_prediction(chat_id, user.id, user.first_name, h, a, wildcard, gw_id=gw["id"])
             await query.edit_message_text(result["message"])
@@ -488,11 +509,12 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         preds = db.get_predictions(gw["id"])
         line = f"{gw['home_team']} vs {gw['away_team']} (GW{gw['gw_number']})\n"
         if len(preds) == 0:
-            starter_name = next(p["name"] for p in players if p["telegram_id"] == gw["starter_id"])
-            line += f"Waiting on {starter_name} to predict first."
+            starter_name = next((p["name"] for p in players if p["telegram_id"] == gw["starter_id"]), None)
+            line += f"Waiting on {starter_name} to predict first." if starter_name else "Waiting on a player who's no longer registered — close this out from the app once kickoff has passed."
         elif len(preds) == 1:
-            other = next(p for p in players if p["telegram_id"] != gw["starter_id"])
-            line += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other['name']}."
+            other = next((p for p in players if p["telegram_id"] != gw["starter_id"]), None)
+            other_name = other["name"] if other else "a second player (not yet registered)"
+            line += f"{player_name(preds[0], players)} predicted {preds[0]['pred_home']}-{preds[0]['pred_away']}. Waiting on {other_name}."
         else:
             line += "Both predictions are in, waiting on full time."
         blocks.append(line)

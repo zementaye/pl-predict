@@ -40,6 +40,26 @@ def player_name(row, players):
     return str(row["telegram_id"])
 
 
+def player_has_open_obligation(chat_id, telegram_id):
+    """True if this player is currently the one who needs to act on some
+    open fixture — either it's their turn to predict, or they have an
+    approved edit request waiting on a new score. Used to block /remove
+    from taking someone out mid-fixture, which used to leave that fixture
+    permanently stuck (nobody left who could ever satisfy 'waiting on
+    <removed player>')."""
+    players = db.get_players()
+    for gw in db.get_open_gameweeks(chat_id):
+        if _kickoff_passed(gw):
+            continue  # already unrecoverable via prediction anyway — /resolvemissed handles it
+        preds = db.get_predictions(gw["id"])
+        if allowed_predictor(gw, preds, players) == telegram_id:
+            return gw
+        edit_req = db.get_edit_request(gw["id"])
+        if edit_req and edit_req["status"] == "approved" and edit_req["requester_id"] == telegram_id:
+            return gw
+    return None
+
+
 def allowed_predictor(gw, preds, players):
     """Whose turn it is right now, or None if both predictions are already in."""
     if len(preds) == 0:
@@ -155,7 +175,10 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
         return {"ok": False, "message": "Both predictions are already in for this match.",
                 "gw": gw, "next_player": None, "chat_announcement": None}
     if telegram_id != allowed:
-        allowed_name = next(p["name"] for p in players if p["telegram_id"] == allowed)
+        allowed_name = next((p["name"] for p in players if p["telegram_id"] == allowed), None)
+        if allowed_name is None:
+            return {"ok": False, "message": "This fixture is waiting on a player who's no longer registered — ask a registered player to close it out from the app (Score as missed) once kickoff has passed.",
+                    "gw": gw, "next_player": None, "chat_announcement": None}
         return {"ok": False, "message": f"Not your turn — waiting on {allowed_name}.",
                 "gw": gw, "next_player": None, "chat_announcement": None}
 
@@ -168,7 +191,10 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
 
     wc_tag = " 🃏" if wildcard else ""
     if len(preds) == 1:
-        other = next(p for p in players if p["telegram_id"] != telegram_id)
+        other = next((p for p in players if p["telegram_id"] != telegram_id), None)
+        if other is None:
+            msg = f"{display_name} predicted {pred_h}-{pred_a}{wc_tag}. Waiting on a second player to register (/start) before anyone else can predict."
+            return {"ok": True, "message": msg, "gw": gw, "next_player": None, "chat_announcement": msg}
         msg = (f"{display_name} predicted {pred_h}-{pred_a}{wc_tag}. "
                f"{other['name']}, your turn — any score except {pred_h}-{pred_a}.")
         return {"ok": True, "message": msg, "gw": gw, "next_player": other["telegram_id"],

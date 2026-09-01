@@ -486,7 +486,12 @@
   function startNewGameweek() {
     var btn = document.getElementById("startGwBtn") || document.getElementById("addFixtureBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Fetching fixtures\u2026"; }
-    apiFetch("/api/newgameweek").then(function (res) {
+    fetchNewGwFixtures();
+  }
+
+  function fetchNewGwFixtures(matchday) {
+    var url = "/api/newgameweek" + (matchday ? "?matchday=" + matchday : "");
+    apiFetch(url).then(function (res) {
       if (!res.body.ok) {
         content.innerHTML = '<div class="error-banner">' + esc(res.body.message) + '</div>';
         return;
@@ -498,8 +503,15 @@
 
   function renderFixtureList() {
     if (!newGwFixtures || !newGwFixtures.fixtures.length) {
-      content.innerHTML = '<div class="empty empty-setup">No more fixtures to add for that matchday.</div>' +
+      var nextMd = (newGwFixtures ? newGwFixtures.matchday : 0) + 1;
+      content.innerHTML =
+        '<div class="empty empty-setup">No fixtures left to add for matchday ' +
+        esc(newGwFixtures ? newGwFixtures.matchday : "?") + '.<br>' +
+        '<small>If there\u2019s a match coming up that\u2019s not listed, it\u2019s probably in the next matchday.</small></div>' +
+        '<div class="submit-row"><button class="btn btn-primary" id="nextMdBtn">Try matchday ' + nextMd + ' \u2192</button></div>' +
         '<div class="submit-row"><button class="btn btn-ghost" id="cancelAddBtn">Back</button></div>';
+      var nb = document.getElementById("nextMdBtn");
+      if (nb) nb.addEventListener("click", function () { fetchNewGwFixtures(nextMd); });
       var cb0 = document.getElementById("cancelAddBtn");
       if (cb0) cb0.addEventListener("click", function () { newGwFixtures = null; render(); });
       return;

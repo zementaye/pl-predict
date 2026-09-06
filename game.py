@@ -81,6 +81,21 @@ def open_gameweeks(chat_id):
     return db.get_open_gameweeks(chat_id)
 
 
+def active_wildcard_gameweek(chat_id, telegram_id, exclude_gw_id=None):
+    """The open fixture (other than exclude_gw_id) where this player currently
+    has their wildcard toggled on, or None. A player can only have their
+    wildcard active on one fixture at a time — several fixtures can be open
+    concurrently, so without this check it was possible to double points on
+    more than one game at once."""
+    for gw in db.get_open_gameweeks(chat_id):
+        if gw["id"] == exclude_gw_id:
+            continue
+        for p in db.get_predictions(gw["id"]):
+            if p["telegram_id"] == telegram_id and p["wildcard"]:
+                return gw
+    return None
+
+
 def _resolve_gameweek(chat_id, gw_id):
     """Looks up an explicit fixture by id (used by the app, which always
     knows which card the person tapped) and makes sure it actually belongs
@@ -185,6 +200,13 @@ def submit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildca
     if len(preds) == 1 and preds[0]["pred_home"] == pred_h and preds[0]["pred_away"] == pred_a:
         return {"ok": False, "message": f"{pred_h}-{pred_a} is already taken — pick a different score.",
                 "gw": gw, "next_player": None, "chat_announcement": None}
+
+    if wildcard:
+        other_gw = active_wildcard_gameweek(chat_id, telegram_id, exclude_gw_id=gw["id"])
+        if other_gw:
+            return {"ok": False,
+                    "message": f"Your wildcard is already active on {other_gw['home_team']} vs {other_gw['away_team']} — untoggle it there first.",
+                    "gw": gw, "next_player": None, "chat_announcement": None}
 
     db.add_prediction(gw["id"], telegram_id, pred_h, pred_a, wildcard)
     preds = db.get_predictions(gw["id"])
@@ -305,6 +327,13 @@ def edit_prediction(chat_id, telegram_id, display_name, pred_h, pred_a, wildcard
     if other_pred and other_pred["pred_home"] == pred_h and other_pred["pred_away"] == pred_a:
         return {"ok": False, "message": f"{pred_h}-{pred_a} is already taken \u2014 pick a different score.",
                 "gw": gw, "chat_announcement": None}
+
+    if wildcard:
+        other_gw = active_wildcard_gameweek(chat_id, telegram_id, exclude_gw_id=gw["id"])
+        if other_gw:
+            return {"ok": False,
+                    "message": f"Your wildcard is already active on {other_gw['home_team']} vs {other_gw['away_team']} \u2014 untoggle it there first.",
+                    "gw": gw, "chat_announcement": None}
 
     db.update_prediction(gw["id"], telegram_id, pred_h, pred_a, wildcard)
     db.clear_edit_request(gw["id"])

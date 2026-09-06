@@ -238,7 +238,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/history - see past results and predictions",
         "",
         "🃏 Wildcard: toggle it on your prediction to double whatever points you earn. "
-        "Renews every gameweek, no limit, each player chooses independently.",
+        "Renews every gameweek, each player chooses independently — but only one fixture "
+        "at a time can have your wildcard active.",
     ]
     await update.message.reply_text("\n".join(l for l in lines if l is not None))
 

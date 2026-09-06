@@ -645,6 +645,8 @@ body {
   transition: transform 0.2s var(--ease), background 0.2s var(--ease);
 }
 
+.toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .toggle.on { border-color: var(--amber-deep); background: rgba(255, 182, 39, 0.14); }
 .toggle.on::after {
   transform: translateX(20px);

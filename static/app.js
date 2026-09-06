@@ -224,6 +224,21 @@
     return '<div class="edit-row"><button class="btn btn-ghost btn-small" data-action="request-edit" data-gw="' + gwId + '">Request to edit my prediction</button></div>';
   }
 
+  // The other open fixture (if any) where I already have my wildcard toggled
+  // on. A wildcard can only be active on one fixture at a time, so the UI
+  // should stop the player before they hit a failed submit, not just after.
+  function otherActiveWildcardGw(meId, excludeGwId) {
+    if (!meId) return null;
+    var gws = state.active_gameweeks || [];
+    for (var i = 0; i < gws.length; i++) {
+      var g = gws[i];
+      if (g.id === excludeGwId) continue;
+      var mine = g.predictions.find(function (p) { return p.telegram_id === meId; });
+      if (mine && mine.wildcard) return g;
+    }
+    return null;
+  }
+
   // Builds the markup for a single open fixture card.
   function fixtureCardHtml(gw) {
     if (drafts[gw.id] == null) drafts[gw.id] = { home: 0, away: 0, wildcard: false };
@@ -287,15 +302,26 @@
     }
     html += '</div>'; // .scoreboard
 
+    var lockedWildcardGw = (me && (myTurn || iAmApprovedEditor)) ? otherActiveWildcardGw(me.telegram_id, gw.id) : null;
+    var wcLabel = '\ud83c\udfb2 Wildcard<small>' +
+      (lockedWildcardGw
+        ? 'Already active on ' + esc(lockedWildcardGw.home) + ' vs ' + esc(lockedWildcardGw.away)
+        : 'Doubles whatever points you earn') +
+      '</small>';
+
     if (myTurn) {
       html += '<div class="perforation"></div>';
-      html += '<div class="wildcard-row"><div class="wildcard-label">\ud83c\udfb2 Wildcard<small>Doubles whatever points you earn</small></div>' +
-        '<button class="toggle' + (draft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="new"></button></div>';
+      html += '<div class="wildcard-row"><div class="wildcard-label">' + wcLabel + '</div>' +
+        '<button class="toggle' + (draft.wildcard ? ' on' : '') + '"' +
+        (lockedWildcardGw ? ' disabled' : '') +
+        ' data-action="toggle-wc" data-gw="' + gw.id + '" data-which="new"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit" data-gw="' + gw.id + '">Submit prediction</button></div>';
     } else if (iAmApprovedEditor) {
       html += '<div class="perforation"></div>';
-      html += '<div class="wildcard-row"><div class="wildcard-label">\ud83c\udfb2 Wildcard<small>Doubles whatever points you earn</small></div>' +
-        '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '" data-action="toggle-wc" data-gw="' + gw.id + '" data-which="edit"></button></div>';
+      html += '<div class="wildcard-row"><div class="wildcard-label">' + wcLabel + '</div>' +
+        '<button class="toggle' + (editDraft.wildcard ? ' on' : '') + '"' +
+        (lockedWildcardGw ? ' disabled' : '') +
+        ' data-action="toggle-wc" data-gw="' + gw.id + '" data-which="edit"></button></div>';
       html += '<div class="submit-row"><button class="btn btn-primary" data-action="submit-edit" data-gw="' + gw.id + '">Save new prediction</button></div>';
     } else if (missed) {
       html += '<div class="turn-banner missed">\u23f1\ufe0f Kickoff has passed \u2014 this fixture can no longer be predicted.</div>';

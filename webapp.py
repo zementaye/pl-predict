@@ -159,7 +159,7 @@ def api_state():
     return jsonify({
         "me": me,
         "players": [{"telegram_id": p["telegram_id"], "name": p["name"]} for p in players],
-        "leaderboard": [{"name": r["name"], "total": r["total"]} for r in db.leaderboard()],
+        "leaderboard": [{"telegram_id": r["telegram_id"], "name": r["name"], "total": r["total"]} for r in db.leaderboard()],
         "active_gameweeks": active_gws,
         "history": history,
         "max_score": game.MAX_SCORE,

@@ -110,7 +110,7 @@
   function renderStatsStrip() {
     if (!statsStrip) return;
     if (state.setup_needed || !state.players.length) { statsStrip.innerHTML = ""; return; }
-    var mine = state.me && state.leaderboard.find(function (r) { return r.name === state.me.name; });
+    var mine = state.me && state.leaderboard.find(function (r) { return r.telegram_id === state.me.telegram_id; });
     var rank = mine ? state.leaderboard.indexOf(mine) + 1 : null;
     var openCount = (state.active_gameweeks || []).length;
     statsStrip.innerHTML =
@@ -445,15 +445,17 @@
       body: JSON.stringify({ gw_id: gwId, home: draft.home, away: draft.away, wildcard: draft.wildcard }),
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
-      delete drafts[gwId];
-      if (res.body.ok && btn) {
-        btn.textContent = "\u2713 Locked in";
-        btn.classList.add("btn-success");
+      if (res.body.ok) {
+        delete drafts[gwId];
+        if (btn) {
+          btn.textContent = "\u2713 Locked in";
+          btn.classList.add("btn-success");
+        }
         setTimeout(loadState, 420);
       } else {
         loadState();
+        if (tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
       }
-      if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
 
@@ -482,15 +484,17 @@
       body: JSON.stringify({ gw_id: gwId, home: editDraft.home, away: editDraft.away, wildcard: editDraft.wildcard }),
     }).then(function (res) {
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
-      delete editDrafts[gwId];
-      if (res.body.ok && btn) {
-        btn.textContent = "\u2713 Saved";
-        btn.classList.add("btn-success");
+      if (res.body.ok) {
+        delete editDrafts[gwId];
+        if (btn) {
+          btn.textContent = "\u2713 Saved";
+          btn.classList.add("btn-success");
+        }
         setTimeout(loadState, 420);
       } else {
         loadState();
+        if (tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
       }
-      if (!res.body.ok && tg) tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message);
     });
   }
 

@@ -114,11 +114,18 @@ async def lock_in_match(chat_id, idx, context, fixtures):
     return gw, None
 
 
-async def prompt_prediction(bot, chat_id, gw, player_id, players):
+async def prompt_prediction(context, chat_id, gw, player_id, players):
+    """Sends the interactive score keypad to a player and remembers which
+    fixture it belongs to, so the callback buttons on that keypad know which
+    gameweek to act on (several fixtures can be open at once). Every path
+    that shows this keypad — after locking a match, after the other player
+    submits, or via /predict itself — must go through here so that mapping
+    always gets set; a keypad sent without it fails on the first tap."""
     name = next(p["name"] for p in players if p["telegram_id"] == player_id)
     home = gw["home_team"]
     away = gw["away_team"]
-    await bot.send_message(
+    context.chat_data.setdefault("predict_gw_id_by_user", {})[player_id] = gw["id"]
+    await context.bot.send_message(
         chat_id=chat_id,
         text=f"{name}, you're up — build your prediction for {home} vs {away}:",
         reply_markup=build_score_keyboard(home, away, 0, 0, False),
@@ -314,7 +321,7 @@ async def on_setmatch_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_crests(context.bot, chat_id, gw, match)
 
     players = db.get_players()
-    await prompt_prediction(context.bot, chat_id, gw, gw["starter_id"], players)
+    await prompt_prediction(context, chat_id, gw, gw["starter_id"], players)
 
 
 async def setmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -338,7 +345,7 @@ async def setmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_crests(context.bot, chat_id, gw, match)
 
     players = db.get_players()
-    await prompt_prediction(context.bot, chat_id, gw, gw["starter_id"], players)
+    await prompt_prediction(context, chat_id, gw, gw["starter_id"], players)
 
 
 async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -389,8 +396,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await update.message.reply_text(f"Not your turn — waiting on {allowed_name}.")
             return
-        context.chat_data.setdefault("predict_gw_id_by_user", {})[user.id] = gw["id"]
-        await prompt_prediction(context.bot, chat_id, gw, user.id, players)
+        await prompt_prediction(context, chat_id, gw, user.id, players)
         return
 
     m = SCORE_RE.match(" ".join(context.args))
@@ -407,7 +413,7 @@ async def predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok, msg, gw, players, next_player = await submit_prediction(chat_id, user, pred_h, pred_a, wildcard, context)
     await update.message.reply_text(msg)
     if ok and next_player:
-        await prompt_prediction(context.bot, chat_id, gw, next_player, players)
+        await prompt_prediction(context, chat_id, gw, next_player, players)
 
 
 async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -471,7 +477,7 @@ async def on_prediction_callback(update: Update, context: ContextTypes.DEFAULT_T
         if ok:
             await query.edit_message_text(msg)
             if next_player:
-                await prompt_prediction(context.bot, chat_id, gw, next_player, players)
+                await prompt_prediction(context, chat_id, gw, next_player, players)
         else:
             await query.edit_message_text(msg)
         return

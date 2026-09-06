@@ -5,8 +5,8 @@ LifeHub. Read this first in any new session before making changes.
 
 ## Project basics
 
-- Local folder: `C:\Users\HP\LifeHub`
-- GitHub repo: https://github.com/zementaye/lifehub (branch: `main`)
+- Local folder: `C:\Users\HP\pl-predict`
+- GitHub repo: https://github.com/zementaye/pl-predict (branch: `main`)
 - Deployed on Render (auto-deploys from `main`, if auto-deploy is enabled —
   otherwise trigger a manual deploy from the Render dashboard after pushing)
 - Stack: Flask + SQLite (or Turso) + Jinja templates, no build step

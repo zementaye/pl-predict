@@ -3,6 +3,8 @@ import hmac
 import json
 import logging
 import os
+import threading
+import time
 from urllib.parse import parse_qsl
 
 import requests
@@ -82,6 +84,15 @@ def notify_chat(text):
 @app.route("/")
 def index():
     return send_from_directory("frontend", "index.html")
+
+
+@app.route("/health")
+def health():
+    """Bare-bones keep-alive target — for the self-ping loop started
+    below, or for an external pinger (cron-job.org, UptimeRobot) if you'd
+    rather not rely on that. Deliberately does no DB work, just a plain
+    200, so hitting it every few minutes costs almost nothing."""
+    return "ok", 200
 
 
 # ---------- API ----------
@@ -381,6 +392,44 @@ def api_results():
         return jsonify({"ok": False, "message": msg})
 
     return jsonify({"ok": True, "message": "\n\n".join(checked_texts)})
+
+
+# ---------- keep-alive ----------
+
+def _self_ping_loop():
+    """Runs for the lifetime of this process. Render's free tier spins a
+    service down after 15 minutes with no *incoming* HTTP traffic; this
+    makes an outbound GET to this app's own public URL every 10 minutes,
+    which round-trips back in as real incoming traffic and resets that
+    idle timer.
+
+    Reuses WEBAPP_URL rather than introducing a new env var — it's
+    already this service's own public URL, just previously only ever
+    read by the bot service (see .env.example / README). Set it here
+    too, on the web app service's own environment, to enable this.
+    No-ops quietly if it isn't set. Never lets a failed ping kill the
+    loop — the next one, 10 minutes later, gets another shot.
+
+    Started at import time (not inside `if __name__ == "__main__"`) so it
+    also runs under gunicorn in production, not just local `python
+    webapp.py`. Safe with the default single gunicorn worker this
+    Procfile uses; scaling to `-w 2+` would start one thread per worker,
+    which just means a few redundant pings rather than any actual
+    problem.
+    """
+    webapp_url = os.environ.get("WEBAPP_URL", "").rstrip("/")
+    if not webapp_url:
+        log.info("WEBAPP_URL not set — self-ping loop not started.")
+        return
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(f"{webapp_url}/health", timeout=10)
+        except Exception:
+            log.warning("Self-ping to %s/health failed", webapp_url, exc_info=True)
+
+
+threading.Thread(target=_self_ping_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

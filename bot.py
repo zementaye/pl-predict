@@ -242,6 +242,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/pending - see whose turn it is / current fixture",
         "/results - manually check if the current match has finished and score it",
         "/fixresult <gw> <score> - correct an already-scored fixture, e.g. /fixresult 12 1-0",
+        "/adjustpoints <name> <delta> - add or remove points, e.g. /adjustpoints Tsion -5",
         "/table - see the points standings",
         "/history - see past results and predictions",
         "",
@@ -568,11 +569,20 @@ async def auto_check_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 FIXRESULT_RE = re.compile(r"^\s*(?:gw)?(\d+)\s+(\d+)\s*[-:]\s*(\d+)\s*$", re.IGNORECASE)
+FIXRESULT_ID_RE = re.compile(r"^\s*id\s*[:#]?\s*(\d+)\s+(\d+)\s*[-:]\s*(\d+)\s*$", re.IGNORECASE)
 
 
 async def fixresult_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = " ".join(context.args) if context.args else ""
+
+    m_id = FIXRESULT_ID_RE.match(text)
+    if m_id:
+        gameweek_id, home, away = int(m_id.group(1)), int(m_id.group(2)), int(m_id.group(3))
+        result = game.correct_result_by_id(chat_id, gameweek_id, home, away)
+        await update.message.reply_text(result["message"])
+        return
+
     m = FIXRESULT_RE.match(text)
     if not m:
         await update.message.reply_text(
@@ -584,6 +594,25 @@ async def fixresult_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     gw_number, home, away = int(m.group(1)), int(m.group(2)), int(m.group(3))
     result = game.correct_result(chat_id, gw_number, home, away)
+    await update.message.reply_text(result["message"])
+
+
+async def adjustpoints_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /adjustpoints <name> <delta>\n"
+            "e.g. /adjustpoints Tsion -5 to remove 5 points, or "
+            "/adjustpoints Tsion 5 to add 5."
+        )
+        return
+    *name_parts, delta_str = context.args
+    name = " ".join(name_parts)
+    try:
+        delta = int(delta_str)
+    except ValueError:
+        await update.message.reply_text("The last part needs to be a whole number, e.g. -5 or 5.")
+        return
+    result = game.adjust_points(name, delta)
     await update.message.reply_text(result["message"])
 
 
@@ -631,6 +660,7 @@ async def post_init(app):
         BotCommand("pending", "See whose turn it is / current fixture"),
         BotCommand("results", "Check if the current match has finished"),
         BotCommand("fixresult", "Correct an already-scored fixture's result"),
+        BotCommand("adjustpoints", "Add or remove points from a player's total"),
         BotCommand("table", "See the points standings"),
         BotCommand("history", "See past results and predictions"),
         BotCommand("help", "Show all commands"),
@@ -673,6 +703,7 @@ def main():
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("results", results_cmd))
     app.add_handler(CommandHandler("fixresult", fixresult_cmd))
+    app.add_handler(CommandHandler("adjustpoints", adjustpoints_cmd))
     app.add_handler(CommandHandler("table", table_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CallbackQueryHandler(on_setmatch_callback, pattern=r"^setmatch:"))

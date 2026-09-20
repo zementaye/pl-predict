@@ -440,25 +440,13 @@ def check_and_score_gameweek(gw):
     return "\n".join(lines)
 
 
-def correct_result(chat_id, gw_number, actual_home, actual_away):
-    """Manually overrides the stored final score for an already-finished
-    fixture and rescores every prediction against it. For when the data
-    source got it wrong — e.g. a goal that was later VAR-disallowed showed
-    up in the provisional score — and it needs fixing after the fact rather
-    than waiting on the automatic check."""
-    matches = db.get_gameweeks_by_number(chat_id, gw_number)
-    if not matches:
-        return {"ok": False, "message": f"No GW{gw_number} fixture found."}
-    if len(matches) > 1:
-        options = "\n".join(f"- {g['home_team']} vs {g['away_team']} (id {g['id']}, {g['status']})" for g in matches)
-        return {"ok": False, "message": f"More than one fixture is stored as GW{gw_number}, so I won't guess "
-                                         f"which one you mean:\n{options}\nSort this out manually before retrying."}
-    gw = matches[0]
+def _apply_correction(chat_id, gw, actual_home, actual_away, label):
+    if gw["chat_id"] != chat_id:
+        return {"ok": False, "message": "That fixture isn't in this chat."}
     if gw["status"] != "finished":
-        return {"ok": False, "message": f"GW{gw_number} ({gw['home_team']} vs {gw['away_team']}) hasn't been "
+        return {"ok": False, "message": f"{label} ({gw['home_team']} vs {gw['away_team']}) hasn't been "
                                          f"scored yet — nothing to correct."}
 
-    players = db.get_players()
     preds = db.get_predictions(gw["id"])
     for p in preds:
         pts = calc_points(p["pred_home"], p["pred_away"], actual_home, actual_away)
@@ -469,6 +457,66 @@ def correct_result(chat_id, gw_number, actual_home, actual_away):
     db.finish_gameweek(gw["id"], actual_home, actual_away)
     old = f"{gw['actual_home']}-{gw['actual_away']}"
     new = f"{actual_home}-{actual_away}"
-    msg = (f"Corrected GW{gw_number}: {gw['home_team']} vs {gw['away_team']} was {old}, "
+    msg = (f"Corrected {label}: {gw['home_team']} vs {gw['away_team']} was {old}, "
            f"now {new}. Points recalculated.")
+    return {"ok": True, "message": msg, "chat_announcement": msg}
+
+
+def correct_result(chat_id, gw_number, actual_home, actual_away):
+    """Manually overrides the stored final score for an already-finished
+    fixture and rescores every prediction against it. For when the data
+    source got it wrong — e.g. a goal that was later VAR-disallowed showed
+    up in the provisional score — and it needs fixing after the fact rather
+    than waiting on the automatic check."""
+    matches = db.get_gameweeks_by_number(chat_id, gw_number)
+    if not matches:
+        return {"ok": False, "message": f"No GW{gw_number} fixture found."}
+    if len(matches) > 1:
+        options = "\n".join(f"- {g['home_team']} vs {g['away_team']} (status {g['status']}) "
+                             f"\u2192 /fixresult id:{g['id']} {actual_home}-{actual_away}" for g in matches)
+        return {"ok": False, "message": f"More than one fixture is stored as GW{gw_number}, so I won't guess "
+                                         f"which one you mean. Run one of these instead:\n{options}"}
+    return _apply_correction(chat_id, matches[0], actual_home, actual_away, f"GW{gw_number}")
+
+
+def correct_result_by_id(chat_id, gameweek_id, actual_home, actual_away):
+    """Same as correct_result, but targets one specific fixture by its
+    internal row id rather than by GW number — the escape hatch for the rare
+    case where a chat has more than one fixture stored under the same GW
+    number and correct_result refuses to guess between them."""
+    gw = db.get_gameweek(gameweek_id)
+    if not gw:
+        return {"ok": False, "message": f"No fixture with id {gameweek_id} found."}
+    return _apply_correction(chat_id, gw, actual_home, actual_away, f"fixture #{gameweek_id}")
+
+
+def adjust_points(name, delta):
+    """Nudges a player's leaderboard total up or down by delta, on top of
+    whatever they've earned from actual fixtures — for a one-off correction
+    that isn't tied to any single match result."""
+    players = db.get_players()
+    matches = [p for p in players if p["name"].strip().lower() == name.strip().lower()]
+    if not matches:
+        names = ", ".join(p["name"] for p in players) or "nobody registered yet"
+        return {"ok": False, "message": f'No registered player named "{name}". Registered: {names}.'}
+    if len(matches) > 1:
+        return {"ok": False, "message": f'More than one registered player matches "{name}" — check /players.'}
+    player = matches[0]
+    db.adjust_points(player["telegram_id"], delta)
+    sign = "+" if delta >= 0 else ""
+    msg = f"{player['name']}'s points adjusted by {sign}{delta}."
+    return {"ok": True, "message": msg, "chat_announcement": msg}
+
+
+def adjust_points_by_id(telegram_id, delta):
+    """Same as adjust_points, but targets a player by their telegram_id — for
+    the web app, which already has the exact player picked from a list
+    rather than a typed name."""
+    players = db.get_players()
+    player = next((p for p in players if p["telegram_id"] == telegram_id), None)
+    if not player:
+        return {"ok": False, "message": "That player isn't registered."}
+    db.adjust_points(player["telegram_id"], delta)
+    sign = "+" if delta >= 0 else ""
+    msg = f"{player['name']}'s points adjusted by {sign}{delta}."
     return {"ok": True, "message": msg, "chat_announcement": msg}

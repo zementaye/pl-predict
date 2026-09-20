@@ -16,6 +16,7 @@
   var drafts = {};           // gwId -> { home, away, wildcard } — new predictions being built
   var editDrafts = {};       // gwId -> same shape, for an already-submitted prediction being edited
   var fixDrafts = {};        // gwId -> { home, away } — a finished result being corrected via /api/fixresult
+  var adjustDrafts = {};     // telegram_id -> true — a player's points adjuster being edited (admin only)
   var newGwFixtures = null;  // fixtures list while picking a match to add
 
   function apiFetch(path, opts) {
@@ -399,6 +400,7 @@
     if (!btn) return;
     var action = btn.dataset.action;
     var gwId = btn.dataset.gw ? Number(btn.dataset.gw) : null;
+    var playerId = btn.dataset.player ? Number(btn.dataset.player) : null;
 
     if (action === "step") {
       var draftObj = btn.dataset.which === "edit" ? editDrafts[gwId] : drafts[gwId];
@@ -443,6 +445,14 @@
       render();
     } else if (action === "save-fix") {
       saveFix(gwId, btn);
+    } else if (action === "toggle-adjust") {
+      adjustDrafts[playerId] = true;
+      render();
+    } else if (action === "cancel-adjust") {
+      delete adjustDrafts[playerId];
+      render();
+    } else if (action === "save-adjust") {
+      saveAdjust(playerId, btn);
     }
   });
 
@@ -541,6 +551,27 @@
     });
   }
 
+  function saveAdjust(playerId, btn) {
+    var el = document.getElementById("adjustDelta" + playerId);
+    if (!el) return;
+    var delta = parseInt(el.value, 10);
+    if (!delta) {
+      delete adjustDrafts[playerId];
+      render();
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = "Applying\u2026"; }
+    apiFetch("/api/adjustpoints", {
+      method: "POST",
+      body: JSON.stringify({ telegram_id: playerId, delta: delta }),
+    }).then(function (res) {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
+      delete adjustDrafts[playerId];
+      if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
+      loadState();
+    });
+  }
+
   function startNewGameweek() {
     var btn = document.getElementById("startGwBtn") || document.getElementById("addFixtureBtn");
     if (btn) { btn.disabled = true; btn.textContent = "Fetching fixtures\u2026"; }
@@ -620,15 +651,27 @@
       return;
     }
     var top = state.leaderboard[0].total || 1;
+    var isAdmin = !!(state.me && state.me.is_admin);
     var rows = state.leaderboard.map(function (r, i) {
       var rankClass = i < 3 ? " rank-" + (i + 1) : "";
       var pct = Math.max(4, Math.round((r.total / top) * 100));
+      var adjustHtml = "";
+      if (isAdmin) {
+        adjustHtml = adjustDrafts[r.telegram_id]
+          ? '<div class="adjust-row">' +
+              '<input type="number" class="adjust-input" id="adjustDelta' + r.telegram_id + '" placeholder="\u00b1pts">' +
+              '<button class="btn btn-primary btn-small" data-action="save-adjust" data-player="' + r.telegram_id + '">Apply</button>' +
+              '<button class="btn btn-ghost btn-small" data-action="cancel-adjust" data-player="' + r.telegram_id + '">Cancel</button>' +
+            '</div>'
+          : '<button class="adjust-toggle" data-action="toggle-adjust" data-player="' + r.telegram_id + '" aria-label="Adjust points">\u2699\ufe0f</button>';
+      }
       return '<div class="standing-row' + rankClass + '">' +
         '<span class="standing-rank">' + (i + 1) + '</span>' +
         avatarHtml(r.name) +
         '<span class="standing-main"><span class="standing-name">' + esc(r.name) + '</span>' +
         '<span class="standing-bar-track"><span class="standing-bar-fill" data-pct="' + pct + '" style="width:0%"></span></span></span>' +
         '<span class="standing-pts"><span class="pts-count" data-target="' + r.total + '">0</span><small>pts</small></span>' +
+        adjustHtml +
         '</div>';
     }).join("");
     content.innerHTML = '<div class="section-head"><span class="label">League table</span></div>' +

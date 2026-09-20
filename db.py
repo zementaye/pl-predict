@@ -7,7 +7,8 @@ import psycopg2.extras
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS players (
     telegram_id BIGINT PRIMARY KEY,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    points_adjustment INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS gameweeks (
@@ -62,6 +63,11 @@ ALTER TABLE predictions ADD COLUMN IF NOT EXISTS wildcard BOOLEAN NOT NULL DEFAU
 -- disallowed, and the bot had already locked in the wrong score.
 ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS pending_home INTEGER;
 ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS pending_away INTEGER;
+
+-- Manual points adjustment, applied on top of the sum of per-fixture
+-- points in leaderboard() — for correcting a player's total for reasons
+-- outside any single fixture (a scoring dispute, a penalty, etc.).
+ALTER TABLE players ADD COLUMN IF NOT EXISTS points_adjustment INTEGER NOT NULL DEFAULT 0;
 
 -- Leftover from an earlier version that only allowed one "awaiting_predictions"
 -- gameweek per chat at a time. Multiple fixtures can now be open at once (see
@@ -295,11 +301,21 @@ def leaderboard():
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pl.telegram_id, pl.name, COALESCE(SUM(p.points),0) as total "
+                "SELECT pl.telegram_id, pl.name, COALESCE(SUM(p.points),0) + pl.points_adjustment as total "
                 "FROM players pl LEFT JOIN predictions p ON p.telegram_id = pl.telegram_id "
-                "GROUP BY pl.telegram_id, pl.name ORDER BY total DESC"
+                "GROUP BY pl.telegram_id, pl.name, pl.points_adjustment ORDER BY total DESC"
             )
             return cur.fetchall()
+
+
+def adjust_points(telegram_id, delta):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE players SET points_adjustment = points_adjustment + %s WHERE telegram_id=%s",
+                (delta, telegram_id),
+            )
+            return cur.rowcount > 0
 
 
 def set_setting(key, value):

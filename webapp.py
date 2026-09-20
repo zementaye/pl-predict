@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# Registered player name allowed to see and use the points-adjuster in the
+# app. Blank means nobody sees it. Matched case-insensitively.
+ADMIN_NAME = os.environ.get("ADMIN_NAME", "")
 
 
 # ---------- Telegram auth ----------
@@ -94,10 +97,12 @@ def api_state():
     me = None
     if user:
         registered = next((p for p in players if p["telegram_id"] == user["id"]), None)
+        name = registered["name"] if registered else user.get("first_name", "You")
         me = {
             "telegram_id": user["id"],
-            "name": registered["name"] if registered else user.get("first_name", "You"),
+            "name": name,
             "registered": registered is not None,
+            "is_admin": bool(ADMIN_NAME) and name.strip().lower() == ADMIN_NAME.strip().lower(),
         }
 
     chat_id = the_chat_id()
@@ -413,6 +418,34 @@ def api_fixresult():
     result = game.correct_result_by_id(chat_id, gw_id, home, away)
     if result["ok"] and result.get("chat_announcement"):
         notify_chat(result["chat_announcement"] + f"\n\n(corrected via the app by {user.get('first_name', 'someone')})")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
+
+
+@app.route("/api/adjustpoints", methods=["POST"])
+def api_adjustpoints():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to do that."}), 401
+
+    players = db.get_players()
+    registered = next((p for p in players if p["telegram_id"] == user["id"]), None)
+    my_name = registered["name"] if registered else user.get("first_name", "")
+    if not ADMIN_NAME or my_name.strip().lower() != ADMIN_NAME.strip().lower():
+        return jsonify({"ok": False, "message": "Not allowed."}), 403
+
+    body = request.get_json(silent=True) or {}
+    telegram_id = body.get("telegram_id")
+    delta = body.get("delta")
+    if telegram_id is None or delta is None:
+        return jsonify({"ok": False, "message": "Missing player or amount."}), 400
+    try:
+        delta = int(delta)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Amount must be a whole number."}), 400
+
+    result = game.adjust_points_by_id(telegram_id, delta)
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + " (via the app)")
     return jsonify({"ok": result["ok"], "message": result["message"]})
 
 

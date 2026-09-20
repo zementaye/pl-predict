@@ -444,8 +444,10 @@ def api_adjustpoints():
         return jsonify({"ok": False, "message": "Amount must be a whole number."}), 400
 
     result = game.adjust_points_by_id(telegram_id, delta)
-    if result["ok"] and result.get("chat_announcement"):
-        notify_chat(result["chat_announcement"] + " (via the app)")
+    # Deliberately not posted to the group chat — this is a private
+    # admin-only action, unlike /fixresult and other app actions that do
+    # announce. Only the response here, visible just to the admin in the
+    # app, reflects that it happened.
     return jsonify({"ok": result["ok"], "message": result["message"]})
 
 

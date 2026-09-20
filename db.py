@@ -264,16 +264,18 @@ def set_pending_result(gameweek_id, home, away):
             )
 
 
-def get_gameweek_by_number(chat_id, gw_number):
-    """Most recent gameweek with this GW number for the chat, any status —
-    used by /fixresult to look up a fixture by the number shown in /history."""
+def get_gameweeks_by_number(chat_id, gw_number):
+    """All gameweeks with this GW number for the chat (normally exactly one —
+    each chat tracks a single match per PL matchday — but returned as a list
+    so callers like /fixresult can detect and refuse the rare case where
+    there's more than one, rather than silently guessing)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM gameweeks WHERE chat_id=%s AND gw_number=%s ORDER BY id DESC LIMIT 1",
+                "SELECT * FROM gameweeks WHERE chat_id=%s AND gw_number=%s ORDER BY id DESC",
                 (chat_id, gw_number),
             )
-            return cur.fetchone()
+            return cur.fetchall()
 
 
 def set_points(prediction_id, points):

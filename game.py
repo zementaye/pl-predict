@@ -446,9 +446,14 @@ def correct_result(chat_id, gw_number, actual_home, actual_away):
     source got it wrong — e.g. a goal that was later VAR-disallowed showed
     up in the provisional score — and it needs fixing after the fact rather
     than waiting on the automatic check."""
-    gw = db.get_gameweek_by_number(chat_id, gw_number)
-    if not gw or gw["chat_id"] != chat_id:
+    matches = db.get_gameweeks_by_number(chat_id, gw_number)
+    if not matches:
         return {"ok": False, "message": f"No GW{gw_number} fixture found."}
+    if len(matches) > 1:
+        options = "\n".join(f"- {g['home_team']} vs {g['away_team']} (id {g['id']}, {g['status']})" for g in matches)
+        return {"ok": False, "message": f"More than one fixture is stored as GW{gw_number}, so I won't guess "
+                                         f"which one you mean:\n{options}\nSort this out manually before retrying."}
+    gw = matches[0]
     if gw["status"] != "finished":
         return {"ok": False, "message": f"GW{gw_number} ({gw['home_team']} vs {gw['away_team']}) hasn't been "
                                          f"scored yet — nothing to correct."}

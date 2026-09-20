@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS gameweeks (
     starter_id BIGINT,
     status TEXT DEFAULT 'awaiting_predictions',  -- awaiting_predictions -> predicted -> finished
     actual_home INTEGER,
-    actual_away INTEGER
+    actual_away INTEGER,
+    pending_home INTEGER,
+    pending_away INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -53,6 +55,13 @@ CREATE TABLE IF NOT EXISTS edit_requests (
 # migrates existing deployments forward. Safe to run repeatedly.
 MIGRATIONS = """
 ALTER TABLE predictions ADD COLUMN IF NOT EXISTS wildcard BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Support for a same-score-twice confirmation buffer before a result is
+-- trusted as final (see check_and_score_gameweek in game.py) — added after
+-- a match's provisional FINISHED score included a goal that VAR later
+-- disallowed, and the bot had already locked in the wrong score.
+ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS pending_home INTEGER;
+ALTER TABLE gameweeks ADD COLUMN IF NOT EXISTS pending_away INTEGER;
 
 -- Leftover from an earlier version that only allowed one "awaiting_predictions"
 -- gameweek per chat at a time. Multiple fixtures can now be open at once (see
@@ -236,9 +245,35 @@ def finish_gameweek(gameweek_id, actual_home, actual_away):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE gameweeks SET status='finished', actual_home=%s, actual_away=%s WHERE id=%s",
+                "UPDATE gameweeks SET status='finished', actual_home=%s, actual_away=%s, "
+                "pending_home=NULL, pending_away=NULL WHERE id=%s",
                 (actual_home, actual_away, gameweek_id),
             )
+
+
+def set_pending_result(gameweek_id, home, away):
+    """Records a provisional final score seen from the API without finalizing
+    it yet — check_and_score_gameweek only scores a match once it sees the
+    SAME score on a later check, so a goal that gets VAR-disallowed after
+    full time has a chance to be corrected before it's locked in."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE gameweeks SET pending_home=%s, pending_away=%s WHERE id=%s",
+                (home, away, gameweek_id),
+            )
+
+
+def get_gameweek_by_number(chat_id, gw_number):
+    """Most recent gameweek with this GW number for the chat, any status —
+    used by /fixresult to look up a fixture by the number shown in /history."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM gameweeks WHERE chat_id=%s AND gw_number=%s ORDER BY id DESC LIMIT 1",
+                (chat_id, gw_number),
+            )
+            return cur.fetchone()
 
 
 def set_points(prediction_id, points):

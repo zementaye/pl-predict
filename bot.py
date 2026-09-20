@@ -1,9 +1,7 @@
-import asyncio
 import os
 import re
 import logging
 
-import requests
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
@@ -243,6 +241,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/approveedit - approve the other player's edit request",
         "/pending - see whose turn it is / current fixture",
         "/results - manually check if the current match has finished and score it",
+        "/fixresult <gw> <score> - correct an already-scored fixture, e.g. /fixresult 12 1-0",
         "/table - see the points standings",
         "/history - see past results and predictions",
         "",
@@ -568,31 +567,24 @@ async def auto_check_job(context: ContextTypes.DEFAULT_TYPE):
         await check_and_score_gameweek(gw, context.bot)
 
 
-async def self_ping_job(context: ContextTypes.DEFAULT_TYPE):
-    """Only registered when running in webhook mode (see main()). Render's
-    free tier spins a service down after 15 minutes with no *incoming*
-    HTTP traffic; this makes an outbound GET to this service's own public
-    URL every 10 minutes, which round-trips back in as real incoming
-    traffic and resets that idle timer.
+FIXRESULT_RE = re.compile(r"^\s*(?:gw)?(\d+)\s+(\d+)\s*[-:]\s*(\d+)\s*$", re.IGNORECASE)
 
-    Unlike webapp.py's version, there's no plain /health route to hit
-    here — python-telegram-bot's built-in webhook server only exposes
-    one path (POST-only, at the bot token). A GET to the base URL simply
-    gets a 404 from that server, which is fine: the request still lands
-    on the service and counts as traffic, same as a real one would.
 
-    requests.get() is blocking, so it's run in a worker thread via
-    asyncio.to_thread rather than directly in this async job — otherwise
-    a slow/hanging request would stall the bot's event loop (and with it,
-    real Telegram updates) for the duration.
-    """
-    webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
-    if not webhook_url:
+async def fixresult_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = " ".join(context.args) if context.args else ""
+    m = FIXRESULT_RE.match(text)
+    if not m:
+        await update.message.reply_text(
+            "Usage: /fixresult <gw number> <home>-<away>\n"
+            "e.g. /fixresult 12 1-0 — corrects an already-scored fixture, "
+            "for when the API's result turns out to have been wrong "
+            "(a VAR-disallowed goal that briefly counted, for example)."
+        )
         return
-    try:
-        await asyncio.to_thread(requests.get, webhook_url, timeout=10)
-    except Exception:
-        log.warning("Self-ping to %s failed", webhook_url, exc_info=True)
+    gw_number, home, away = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    result = game.correct_result(chat_id, gw_number, home, away)
+    await update.message.reply_text(result["message"])
 
 
 async def table_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,6 +630,7 @@ async def post_init(app):
         BotCommand("approveedit", "Approve the other player's edit request"),
         BotCommand("pending", "See whose turn it is / current fixture"),
         BotCommand("results", "Check if the current match has finished"),
+        BotCommand("fixresult", "Correct an already-scored fixture's result"),
         BotCommand("table", "See the points standings"),
         BotCommand("history", "See past results and predictions"),
         BotCommand("help", "Show all commands"),
@@ -679,6 +672,7 @@ def main():
     app.add_handler(CommandHandler("approveedit", approveedit_cmd))
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("results", results_cmd))
+    app.add_handler(CommandHandler("fixresult", fixresult_cmd))
     app.add_handler(CommandHandler("table", table_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CallbackQueryHandler(on_setmatch_callback, pattern=r"^setmatch:"))
@@ -688,7 +682,6 @@ def main():
 
     webhook_url = os.environ.get("WEBHOOK_URL")
     if webhook_url:
-        app.job_queue.run_repeating(self_ping_job, interval=600, first=60)
         port = int(os.environ.get("PORT", 10000))
         log.info("Bot starting in webhook mode on port %s...", port)
         app.run_webhook(

@@ -399,15 +399,31 @@ def lock_in_match(chat_id, gw_number, match_id, home, away, kickoff, starter_id)
 
 def check_and_score_gameweek(gw):
     """Fetches the match result and scores it if finished. Returns the
-    announcement text, or None if the match hasn't finished yet. Raises on
-    API failure — callers should catch and log."""
+    announcement text, or None if the match hasn't finished yet — or has
+    finished but its score isn't trusted yet (see below). Raises on API
+    failure — callers should catch and log.
+
+    A match reported FINISHED isn't scored immediately: the score is stashed
+    as "pending" and only locked in once a later check sees the exact same
+    score again. This costs one extra check's delay (up to ~30 minutes with
+    the automatic job) but protects against scoring a goal that gets
+    VAR-disallowed after full time — the data source can briefly show the
+    provisional score as final before correcting it.
+    """
     match = api.get_match(gw["match_id"])
 
     if match["status"] != "FINISHED":
+        if gw["pending_home"] is not None or gw["pending_away"] is not None:
+            db.set_pending_result(gw["id"], None, None)
         return None
 
     act_h = match["score"]["fullTime"]["home"]
     act_a = match["score"]["fullTime"]["away"]
+
+    if gw["pending_home"] != act_h or gw["pending_away"] != act_a:
+        db.set_pending_result(gw["id"], act_h, act_a)
+        return None
+
     players = db.get_players()
     preds = db.get_predictions(gw["id"])
 
@@ -422,3 +438,32 @@ def check_and_score_gameweek(gw):
 
     db.finish_gameweek(gw["id"], act_h, act_a)
     return "\n".join(lines)
+
+
+def correct_result(chat_id, gw_number, actual_home, actual_away):
+    """Manually overrides the stored final score for an already-finished
+    fixture and rescores every prediction against it. For when the data
+    source got it wrong — e.g. a goal that was later VAR-disallowed showed
+    up in the provisional score — and it needs fixing after the fact rather
+    than waiting on the automatic check."""
+    gw = db.get_gameweek_by_number(chat_id, gw_number)
+    if not gw or gw["chat_id"] != chat_id:
+        return {"ok": False, "message": f"No GW{gw_number} fixture found."}
+    if gw["status"] != "finished":
+        return {"ok": False, "message": f"GW{gw_number} ({gw['home_team']} vs {gw['away_team']}) hasn't been "
+                                         f"scored yet — nothing to correct."}
+
+    players = db.get_players()
+    preds = db.get_predictions(gw["id"])
+    for p in preds:
+        pts = calc_points(p["pred_home"], p["pred_away"], actual_home, actual_away)
+        if p["wildcard"]:
+            pts *= 2
+        db.set_points(p["id"], pts)
+
+    db.finish_gameweek(gw["id"], actual_home, actual_away)
+    old = f"{gw['actual_home']}-{gw['actual_away']}"
+    new = f"{actual_home}-{actual_away}"
+    msg = (f"Corrected GW{gw_number}: {gw['home_team']} vs {gw['away_team']} was {old}, "
+           f"now {new}. Points recalculated.")
+    return {"ok": True, "message": msg, "chat_announcement": msg}

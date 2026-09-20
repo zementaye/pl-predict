@@ -59,6 +59,9 @@ auto-check for finished matches every 30 minutes.
    with anything except that exact score.
 5. After the match finishes, the bot auto-scores it (or run `/results` to check
    immediately). Check the table anytime with `/table`, or `/history` for the full log.
+   If a scored result turns out to be wrong (e.g. the data source briefly counted
+   a goal that VAR later disallowed), `/fixresult <gw> <score>` corrects it and
+   recalculates points.
 
 Full command list: `/help`
 

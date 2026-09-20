@@ -15,6 +15,7 @@
   var state = null;          // last /api/state payload
   var drafts = {};           // gwId -> { home, away, wildcard } — new predictions being built
   var editDrafts = {};       // gwId -> same shape, for an already-submitted prediction being edited
+  var fixDrafts = {};        // gwId -> { home, away } — a finished result being corrected via /api/fixresult
   var newGwFixtures = null;  // fixtures list while picking a match to add
 
   function apiFetch(path, opts) {
@@ -433,6 +434,15 @@
       checkResult(gwId, btn);
     } else if (action === "resolve-missed") {
       resolveMissed(gwId, btn);
+    } else if (action === "toggle-fix") {
+      var hEntry = state.history.find(function (h) { return h.gw_id === gwId; });
+      fixDrafts[gwId] = { home: hEntry ? hEntry.actual_home : 0, away: hEntry ? hEntry.actual_away : 0 };
+      render();
+    } else if (action === "cancel-fix") {
+      delete fixDrafts[gwId];
+      render();
+    } else if (action === "save-fix") {
+      saveFix(gwId, btn);
     }
   });
 
@@ -509,6 +519,24 @@
       if (!res.body.ok) {
         if (tg && tg.showAlert) tg.showAlert(res.body.message); else alert(res.body.message);
       }
+      loadState();
+    });
+  }
+
+  function saveFix(gwId, btn) {
+    var hEl = document.getElementById("fixHome" + gwId);
+    var aEl = document.getElementById("fixAway" + gwId);
+    if (!hEl || !aEl) return;
+    var home = Math.max(0, Math.min(state.max_score, parseInt(hEl.value, 10) || 0));
+    var away = Math.max(0, Math.min(state.max_score, parseInt(aEl.value, 10) || 0));
+    if (btn) { btn.disabled = true; btn.textContent = "Saving\u2026"; }
+    apiFetch("/api/fixresult", {
+      method: "POST",
+      body: JSON.stringify({ gw_id: gwId, home: home, away: away }),
+    }).then(function (res) {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(res.body.ok ? "success" : "error");
+      delete fixDrafts[gwId];
+      if (!res.body.ok && tg) { tg.showAlert ? tg.showAlert(res.body.message) : alert(res.body.message); }
       loadState();
     });
   }
@@ -626,10 +654,21 @@
         return '<div class="history-pred"><span>' + avatarHtml(p.name, "sm") + esc(p.name) + (p.wildcard ? " \ud83c\udfb4" : "") +
           '</span><span>' + p.home + "-" + p.away + ' <span class="pts">+' + p.points + '</span></span></div>';
       }).join("");
+      var fixing = fixDrafts[h.gw_id];
+      var fixHtml = fixing
+        ? '<div class="fix-row">' +
+            '<input type="number" min="0" max="' + state.max_score + '" value="' + fixing.home + '" class="fix-input" id="fixHome' + h.gw_id + '" inputmode="numeric">' +
+            '<span>\u2013</span>' +
+            '<input type="number" min="0" max="' + state.max_score + '" value="' + fixing.away + '" class="fix-input" id="fixAway' + h.gw_id + '" inputmode="numeric">' +
+            '<button class="btn btn-primary btn-small" data-action="save-fix" data-gw="' + h.gw_id + '">Save</button>' +
+            '<button class="btn btn-ghost btn-small" data-action="cancel-fix" data-gw="' + h.gw_id + '">Cancel</button>' +
+          '</div>'
+        : '<button class="fix-toggle" data-action="toggle-fix" data-gw="' + h.gw_id + '">Wrong result? Correct it</button>';
       return '<div class="history-gw">' +
         '<div class="gw-title"><span>GW ' + esc(h.gw_number) + '</span><span class="ft-badge">FT</span></div>' +
         '<div class="gw-score">' + esc(h.home) + " " + h.actual_home + "\u2013" + h.actual_away + " " + esc(h.away) + '</div>' +
         preds +
+        fixHtml +
         '</div>';
     }).join("");
     content.innerHTML = '<div class="section-head"><span class="label">Match log</span><span class="count">' +

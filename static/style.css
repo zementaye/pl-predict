@@ -912,6 +912,41 @@ body {
   font-weight: 700;
 }
 
+.fix-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+  padding: 8px 0 0;
+  cursor: pointer;
+}
+
+.fix-toggle:active { color: var(--amber); }
+
+.fix-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.fix-input {
+  width: 44px;
+  text-align: center;
+  font-family: "Teko", sans-serif;
+  font-size: 20px;
+  background: rgba(245, 241, 230, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--chalk);
+  padding: 4px 0;
+}
+
+.fix-row .btn-small { padding: 6px 10px; font-size: 11px; }
+
 /* ---------- tab bar ---------- */
 
 .tabbar {

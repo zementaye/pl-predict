@@ -138,6 +138,7 @@ def api_state():
         gwid = r["gameweek_id"]  # group by the actual fixture, not just the matchday number —
         if gwid not in by_gw:    # several fixtures can share the same gw_number now
             entry = {
+                "gw_id": gwid,
                 "gw_number": r["gw_number"],
                 "home": r["home_team"],
                 "away": r["away_team"],
@@ -381,6 +382,38 @@ def api_results():
         return jsonify({"ok": False, "message": msg})
 
     return jsonify({"ok": True, "message": "\n\n".join(checked_texts)})
+
+
+@app.route("/api/fixresult", methods=["POST"])
+def api_fixresult():
+    user = current_telegram_user()
+    if not user:
+        return jsonify({"ok": False, "message": "Open this from Telegram to do that."}), 401
+
+    chat_id = the_chat_id()
+    if not chat_id:
+        return jsonify({"ok": False, "message": "No game set up yet."}), 400
+
+    body = request.get_json(silent=True) or {}
+    gw_id = body.get("gw_id")
+    home = body.get("home")
+    away = body.get("away")
+    if gw_id is None or home is None or away is None:
+        return jsonify({"ok": False, "message": "Missing fixture or score."}), 400
+    try:
+        home, away = int(home), int(away)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "Score must be numbers."}), 400
+    if home < 0 or away < 0 or home > game.MAX_SCORE or away > game.MAX_SCORE:
+        return jsonify({"ok": False, "message": "That score doesn't look right."}), 400
+
+    # Targets the fixture by its internal row id — the id already came from
+    # this chat's own /api/state history, so there's no GW-number ambiguity
+    # to worry about here the way there can be with the bot's /fixresult.
+    result = game.correct_result_by_id(chat_id, gw_id, home, away)
+    if result["ok"] and result.get("chat_announcement"):
+        notify_chat(result["chat_announcement"] + f"\n\n(corrected via the app by {user.get('first_name', 'someone')})")
+    return jsonify({"ok": result["ok"], "message": result["message"]})
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
+import asyncio
 import os
 import re
 import logging
 
+import requests
 from dotenv import load_dotenv
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
@@ -568,6 +570,33 @@ async def auto_check_job(context: ContextTypes.DEFAULT_TYPE):
         await check_and_score_gameweek(gw, context.bot)
 
 
+async def self_ping_job(context: ContextTypes.DEFAULT_TYPE):
+    """Only registered when running in webhook mode (see main()). Render's
+    free tier spins a service down after 15 minutes with no *incoming*
+    HTTP traffic; this makes an outbound GET to this service's own public
+    URL every 10 minutes, which round-trips back in as real incoming
+    traffic and resets that idle timer.
+
+    Unlike webapp.py's version, there's no plain /health route to hit
+    here — python-telegram-bot's built-in webhook server only exposes
+    one path (POST-only, at the bot token). A GET to the base URL simply
+    gets a 404 from that server, which is fine: the request still lands
+    on the service and counts as traffic, same as a real one would.
+
+    requests.get() is blocking, so it's run in a worker thread via
+    asyncio.to_thread rather than directly in this async job — otherwise
+    a slow/hanging request would stall the bot's event loop (and with it,
+    real Telegram updates) for the duration.
+    """
+    webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
+    if not webhook_url:
+        return
+    try:
+        await asyncio.to_thread(requests.get, webhook_url, timeout=10)
+    except Exception:
+        log.warning("Self-ping to %s failed", webhook_url, exc_info=True)
+
+
 FIXRESULT_RE = re.compile(r"^\s*(?:gw)?(\d+)\s+(\d+)\s*[-:]\s*(\d+)\s*$", re.IGNORECASE)
 FIXRESULT_ID_RE = re.compile(r"^\s*id\s*[:#]?\s*(\d+)\s+(\d+)\s*[-:]\s*(\d+)\s*$", re.IGNORECASE)
 
@@ -713,6 +742,7 @@ def main():
 
     webhook_url = os.environ.get("WEBHOOK_URL")
     if webhook_url:
+        app.job_queue.run_repeating(self_ping_job, interval=600, first=60)
         port = int(os.environ.get("PORT", 10000))
         log.info("Bot starting in webhook mode on port %s...", port)
         app.run_webhook(

@@ -14,6 +14,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 import db
 import api
 import game
+from keepalive import should_ping
 from game import clamp, player_name, allowed_predictor, determine_starter
 
 load_dotenv()
@@ -590,6 +591,10 @@ async def self_ping_job(context: ContextTypes.DEFAULT_TYPE):
     """
     webhook_url = os.environ.get("WEBHOOK_URL", "").rstrip("/")
     if not webhook_url:
+        return
+    # Only keep the service awake on the days it's actually used (see
+    # keepalive.py) so it doesn't burn Render's monthly free instance hours.
+    if not should_ping():
         return
     try:
         await asyncio.to_thread(requests.get, webhook_url, timeout=10)

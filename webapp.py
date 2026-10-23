@@ -14,6 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory
 import api
 import db
 import game
+from keepalive import should_ping
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -491,6 +492,10 @@ def _self_ping_loop():
         return
     while True:
         time.sleep(600)
+        # Only keep the service awake on the days it's actually used (see
+        # keepalive.py) so it doesn't burn Render's monthly free hours.
+        if not should_ping():
+            continue
         try:
             requests.get(f"{webapp_url}/health", timeout=10)
         except Exception:
